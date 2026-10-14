@@ -5,9 +5,9 @@ test('进阶多文件 Docker 提交与快照恢复闭环',async({page,request},t
  test.setTimeout(240000);
  const health=await (await request.get('/api/health')).json();
  test.skip(!health.docker_available,'Docker 不可用，禁止宿主降级');
- await page.goto('/');
+ await page.goto('/library');
  await page.locator('.cards article').filter({has:page.getByRole('heading',{name:'知识库更新后的旧版本污染'})}).getByRole('button',{name:'开始训练 ↗'}).click();
- await expect(page.getByText('任务说明',{exact:true})).toBeVisible();
+ await expect(page.getByRole('tab',{name:/任务说明\.md/})).toBeVisible();
  const id=await page.evaluate(()=>localStorage.getItem('session'));
  for(const name of ['solution.py','pipeline.py','ingestion.py','retrieval.py','context_builder.py']){
   await page.getByRole('button',{name:'打开文件 '+name,exact:true}).click();
@@ -33,7 +33,7 @@ test('进阶多文件 Docker 提交与快照恢复闭环',async({page,request},t
  await expect(page.getByText('● 有未保存修改（草稿已本地保留）')).toBeVisible();
  await page.reload();
  await expect(page.getByText('● 有未保存修改（草稿已本地保留）')).toBeVisible();
- await page.getByRole('button',{name:'保存',exact:true}).click();
+ await page.getByRole('button',{name:'保存 Ctrl S',exact:true}).click();
  await expect(page.getByText('✓ 已保存',{exact:true})).toBeVisible();
  const saved=await (await request.get(`/api/sessions/${id}`)).json();
  expect(saved.files['index_store.py']).toBe(reference);expect(saved.files['pipeline.py']).toBe(pipeline);
@@ -60,7 +60,7 @@ test('进阶多文件 Docker 提交与快照恢复闭环',async({page,request},t
  await expect(page.locator('.evidence > pre')).toContainText('===== index_store.py =====');
  await expect(page.locator('.evidence > pre')).toContainText('===== pipeline.py =====');
  await edit('pipeline.py',pipeline+'# after submission\n');
- await page.getByRole('button',{name:'保存',exact:true}).click();
+ await page.getByRole('button',{name:'保存 Ctrl S',exact:true}).click();
  await expect(page.getByText('✓ 已保存',{exact:true})).toBeVisible();
  await page.getByRole('button',{name:'请求提示 · 2/3'}).click();
  await expect(page.getByText(/提示 2\/3：/)).toBeVisible();

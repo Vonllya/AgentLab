@@ -1345,3 +1345,23 @@ curl -fsS http://127.0.0.1:8000/api/health
 服务状态：确认无执行中生产任务后重启现有8000后端；健康接口返回real、docker_available=true。242条非task记录重启前后摘要完全相同。未提交、未推送、未发布。前端和执行器未改；本轮未重跑全量后端、全量浏览器和原18项Docker验收，不沿用上一轮全量通过结论。
 
 最终专项：`.venv/bin/python -m pytest tests/test_generation_delivery.py -q --junitxml=data/delivery-verification/actionable-complete.xml`：**8 passed，0 skipped**（49.49秒）。原始资产仅在测试候选中把反馈所指diagnostics两项数组改为[]，保持其余代码和独立检查不变；30项检查全部完成双次Docker执行，全部8个门禁通过。此结果证明已传递差异可用于有效修改，是确定性工程验证，不是模型修复成功。两次真实模型失败仍原样记录。最终git diff --check通过。
+
+## 2026-09-26 默认入口、记录删除与多文件标签页
+
+本轮沿用既有路由、存储、Monaco 工作区和训练接口，不修改生成、模型提示词、故障构造或 Docker 评测逻辑。根路径固定替换为 `/generate`，具体生成、题目和训练深链接仍按原路径解析，不再读取最近训练指针决定首页。
+
+删除采用的实际语义：
+
+- 故障生成记录是软删除：正常列表和直接读取不再返回，重复请求幂等；资产和已发布题目保留，已有训练不受影响。后端拒绝删除活动生成记录。
+- 题目是持久化移除标记：从题库和新建训练入口移除，固定任务源码及发布包不删除；已有训练、冻结版本和报告仍可访问。服务初始化重新扫描任务时不会覆盖移除标记。
+- 训练记录是会话软删除：正常会话历史以及其对话、提示、运行和报告接口不再可见；题目、其他会话、文件包和共享快照不删除。运行中评测、Agent 对话或反馈生成时由后端拒绝删除。前端同时清理该会话的草稿、标签布局和最近会话指针。
+- 三类接口都不接收文件路径。已删除或移除对象的直接链接显示“记录已删除或不可用”并提供返回入口。软删除目前不回收磁盘空间，这是保留历史关联完整性的有意限制。
+
+标签页使用单编辑组：每个会话和文件路径对应独立 Monaco model，切换时保留撤销栈、光标和滚动视图；打开列表及活动文件按会话持久化，恢复前按当前 manifest 可读清单过滤。关闭只关闭视图，未保存内容仍留在会话草稿和全局脏状态中，“保存全部”、运行及提交继续处理全部可编辑文件。按范围未加入拖拽、拆分编辑组和重命名。
+
+验证均使用专用测试数据目录 `/tmp/agentlab-playwright-delete-tabs-final-20260926`，没有删除生产或用户记录：
+
+- `.venv/bin/python -m pytest tests/test_deletion.py -q`：**4 passed**。覆盖三类幂等删除、运行状态阻止、发布题目保留、历史训练保留、其他会话和共享子记录不受影响。
+- `AGENTLAB_E2E_DATA=/tmp/agentlab-playwright-delete-tabs-final-20260926 AGENTLAB_BROWSER_EXECUTABLE=/tmp/agentlab-browser/chrome-linux64/chrome npx playwright test e2e/deletion-tabs.spec.ts --workers=1 --reporter=line`：**5 passed**（14.7秒）。覆盖根路径与深链接、取消/成功/重复删除、刷新与直接链接、浏览器状态清理、多文件打开切换关闭恢复、跨标签撤销、关闭脏标签后保存全部，以及只按会话恢复标签。
+- `npm --prefix frontend run build`：TypeScript 与 Vite 构建通过；保留既有大 bundle 警告。
+- 脱敏截图：`data/usability-verification/workspace-tabs.png`。截图只含固定演示题目和代码，不含会话 ID、密钥或用户记录。

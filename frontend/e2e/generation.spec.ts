@@ -30,7 +30,7 @@ test('生成审核发布及 Docker 训练报告闭环（明确 MOCK）',async({p
  const health=await (await request.get('/api/health')).json();test.skip(!health.docker_available,'Docker 不可用，禁止宿主降级');
  await page.goto('/generate');
  await page.getByLabel('训练需求').fill('离线平台流程验收：固定样例不作为真实需求生成证明');
- await page.getByRole('button',{name:'开始生成项目（调用模型）',exact:true}).click();
+ await page.getByRole('button',{name:'开始生成',exact:true}).click();
  await expect(page).toHaveURL(/\/generate\/[a-f0-9]{32}$/);
  const id=page.url().split('/').pop();
  await expect(page.getByText(/MOCK 固定样例，不是需求驱动真实生成/)).toBeVisible();
@@ -40,6 +40,8 @@ test('生成审核发布及 Docker 训练报告闭环（明确 MOCK）',async({p
  await page.goto('/generate/'+id);
  await expect(page.locator('.generation strong[role=status]')).toHaveText('等待作者审核',{timeout:100000});
  await page.getByRole('button',{name:'打开私有资产审核'}).click();
+ await expect(page).toHaveURL(`/generate/${id}/review`);
+ await page.getByRole('button',{name:'提示与范围',exact:true}).click();
  await page.getByText('契约、全部实现、独立检查与教学材料',{exact:true}).click();
  await expect(page.locator('pre.review-assets').filter({hasText:'"faulty"'})).toContainText('faulty');
  await expect(page.getByRole('button',{name:'审核通过并发布'})).toBeDisabled();
@@ -63,7 +65,7 @@ test('生成审核发布及 Docker 训练报告闭环（明确 MOCK）',async({p
  await expect(page.locator('.cards')).toContainText('生成任务');
  await page.getByRole('button',{name:'开始训练 ↗'}).click();
  await expect(page).toHaveURL(/\/training\/[a-f0-9]{32}$/);
- await expect(page.getByText('任务说明',{exact:true})).toBeVisible();
+ await expect(page.getByRole('tab',{name:/任务说明\.md/})).toBeVisible();
  const session=new URL(page.url()).pathname.split('/').pop();
  await page.context().grantPermissions(['clipboard-read','clipboard-write']);
  for(const [file,code] of Object.entries(review.assets.build.reference)){
@@ -76,7 +78,7 @@ test('生成审核发布及 Docker 训练报告闭环（明确 MOCK）',async({p
  await expect(page.locator('.run').first().locator('.runhead .status')).toHaveText('通过',{timeout:60000});
  await page.getByRole('button',{name:'保存并提交评测'}).click();
  await expect(page.locator('.report .runhead .status')).toHaveText('通过',{timeout:60000});
- await page.reload();await expect(page.getByRole('button',{name:'保存',exact:true})).toBeEnabled();await page.getByRole('button',{name:/提交报告/}).click();
+ await page.reload();await expect(page.getByRole('button',{name:'保存 Ctrl S',exact:true})).toBeEnabled();await page.getByRole('button',{name:/提交报告/}).click();
  await expect(page.locator('.report .runhead .status')).toHaveText('通过');
  const state=await (await request.get('/api/sessions/'+session)).json();
  expect(state.task_id).toBe(job.published_task);expect(state.reports[0].snapshot).toBe(state.reports[0].objective.snapshot);
@@ -109,7 +111,7 @@ test('自动诊断修复、预算耗尽和明确授权新批次（MOCK，实际D
  await page.goto('/generate/'+parent);
  await expect(page.locator('strong[role=status]')).toHaveText('本批预算耗尽');
  async function newBatch(count:number){
-  await page.getByRole('button',{name:'重新生成（消耗Token）',exact:true}).click();
+  await page.getByRole('button',{name:'查看结果与追加预算',exact:true}).click();
   await page.getByLabel('新批次最大模型请求').fill(String(count));
   await expect(page.getByRole('button',{name:'确认新预算并重新生成'})).toBeDisabled();
   await page.getByLabel('我明确批准上述新批次预算；旧记录保持不变').check();
@@ -144,8 +146,8 @@ test('需求澄清、局部契约版本、重新验证和刷新（MOCK，实际D
  const id=execFileSync(path.join(root,'.venv/bin/python'),['-m','scripts.seed_contract_browser_fixture'],{cwd:root,env:{...process.env,AGENT_MODE:'mock',AGENTLAB_DATA:'/tmp/agentlab-playwright'},encoding:'utf8'}).trim();
  const before=await (await request.get('/api/generation/jobs/'+id)).json();
  await page.goto('/generate/'+id);
- await page.getByRole('button',{name:'重新生成（消耗Token）',exact:true}).click();
- await page.getByRole('button',{name:'恢复当前批次',exact:true}).click();
+ await page.getByRole('button',{name:'从检查点继续',exact:true}).click();
+ await page.getByRole('button',{name:'恢复当前批次（调用模型并消耗剩余预算）',exact:true}).click();
  await expect(page.getByRole('heading',{name:'需要你明确需求'})).toBeVisible({timeout:15000});
  await expect(page.getByRole('button',{name:'提交需求澄清并继续（消耗Token）'})).toBeDisabled();
  const answer='返回所有整数的算术和，空列表返回0。';
@@ -179,12 +181,14 @@ test('回退后成本展示与作者摘要（MOCK，实际Docker）',async({page
  await expect(page.getByLabel('修复进展与实际用量')).toContainText('不再按无进展提前终止');
  await expect(page.getByLabel('修复进展与实际用量')).toContainText('未返回');
  await page.getByRole('button',{name:'打开私有资产审核'}).click();
+ await page.getByRole('button',{name:'提示与范围',exact:true}).click();
  const summary=page.getByLabel('作者审核摘要');
  await expect(summary).toContainText('未通过门禁');
  await expect(summary).toContainText(id);
  await expect(summary.getByText('参考修复代码与思路审核').locator('..')).not.toHaveAttribute('open','');
  await expect(page.getByRole('button',{name:'审核通过并发布'})).toBeDisabled();
- await page.getByRole('button',{name:'重新生成（消耗Token）',exact:true}).click();
+ await page.getByRole('button',{name:'返回生成详情'}).click();
+ await page.getByRole('button',{name:'重新生成（消耗 Token）',exact:true}).click();
  await expect(page.getByRole('button',{name:'确认新预算并重新生成'})).toBeDisabled();
  await page.reload();await expect(page.getByRole('status')).toContainText('失败');
  const author=await (await request.get('/api/author/generation/'+id)).json();

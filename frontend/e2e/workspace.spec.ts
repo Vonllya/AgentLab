@@ -1,15 +1,15 @@
 import {test,expect} from '@playwright/test';
 test('创建、编辑草稿、保存、提示、mock 对话、刷新恢复',async({page})=>{
- await page.goto('/');
+ await page.goto('/library');
  await expect(page.getByText('MOCK · 确定性辅导')).toBeVisible();
  await page.getByRole('button',{name:'开始训练 ↗'}).first().click();
- await expect(page.getByText('任务说明',{exact:true})).toBeVisible();
+ await expect(page.getByRole('tab',{name:/任务说明\.md/})).toBeVisible();
  const editor=page.locator('.monaco-editor textarea').first();await editor.focus();await page.keyboard.press('ControlOrMeta+End');await page.keyboard.insertText('\n# browser-save-proof');
  await page.getByLabel('诊断说明').fill('根据测试证据定位，继续检查边界。');
  await expect(page.getByText('● 有未保存修改（草稿已本地保留）')).toBeVisible();
  await page.reload();
  await expect(page.getByLabel('诊断说明')).toHaveValue('根据测试证据定位，继续检查边界。');
- await page.getByRole('button',{name:'保存',exact:true}).click();
+ await page.getByRole('button',{name:'保存 Ctrl S',exact:true}).click();
  await expect(page.getByText('✓ 已保存',{exact:true})).toBeVisible();
  await expect(page.locator('.view-lines')).toContainText('# browser-save-proof');
  await page.getByRole('button',{name:'请求提示 · 1/3'}).click();
@@ -30,9 +30,9 @@ test('创建、编辑草稿、保存、提示、mock 对话、刷新恢复',asyn
 test('真实 Docker 提交报告闭环',async({page,request},testInfo)=>{
  test.setTimeout(240000);
  const health=await (await request.get('/api/health')).json();test.skip(!health.docker_available,'Docker 不可用，禁止宿主降级');
- await page.goto('/');
+ await page.goto('/library');
  await page.locator('.cards article').filter({has:page.getByRole('heading',{name:'RAG 重排后的引用错位'})}).getByRole('button',{name:'开始训练 ↗'}).click();
- await expect(page.getByText('任务说明',{exact:true})).toBeVisible();
+ await expect(page.getByRole('tab',{name:/任务说明\.md/})).toBeVisible();
  const sessionId=await page.evaluate(()=>localStorage.getItem('session'));
  const reference='def answer(documents, order):\n    return [{"text": documents[i]["text"], "citation": documents[i]["id"]} for i in order]\n\ndef scenario(data):\n    return answer(data["documents"], data["order"])\n';
  async function edit(code:string){
@@ -43,7 +43,7 @@ test('真实 Docker 提交报告闭环',async({page,request},testInfo)=>{
  }
  await edit(reference);
  await page.getByLabel('诊断说明').fill('引用随选中的文档流转；验证重排、过滤与空集。');
- await page.getByRole('button',{name:'保存',exact:true}).click();
+ await page.getByRole('button',{name:'保存 Ctrl S',exact:true}).click();
  await expect(page.getByText('✓ 已保存',{exact:true})).toBeVisible();
  expect((await (await request.get(`/api/sessions/${sessionId}`)).json()).code).toBe(reference);
  const publicResponse=page.waitForResponse(r=>r.url().endsWith(`/sessions/${sessionId}/runs`)&&r.request().method()==='POST');
@@ -55,7 +55,7 @@ test('真实 Docker 提交报告闭环',async({page,request},testInfo)=>{
  // New revision after a passing public run: the report must never reuse old evidence.
  const submittedCode=reference+'\n# submission revision B\n';
  await edit(submittedCode);
- await page.getByRole('button',{name:'保存',exact:true}).click();
+ await page.getByRole('button',{name:'保存 Ctrl S',exact:true}).click();
  await expect(page.getByText('✓ 已保存',{exact:true})).toBeVisible();
  expect((await (await request.get(`/api/sessions/${sessionId}`)).json()).code).toBe(submittedCode);
  const submitResponse=page.waitForResponse(r=>r.url().endsWith(`/sessions/${sessionId}/submit`)&&r.request().method()==='POST');

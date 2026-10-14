@@ -86,13 +86,14 @@ class Evaluation(Strict):
         return self
 
 class Teaching(Strict):
+    synopsis:str=Field(default='',max_length=140)
     brief:str=Field(min_length=30,max_length=2400)
     hints:list[str]=Field(min_length=3,max_length=3)
     followups:list[str]=Field(min_length=2,max_length=6)
     consistency_notes:str=Field(min_length=10,max_length=1200)
     @model_validator(mode='after')
     def check(self):
-        for text in [self.brief,*self.hints,*self.followups]:
+        for text in [self.synopsis,self.brief,*self.hints,*self.followups]:
             if len(text)>2400 or re.search(r'```|def\s+\w+\(|BEGIN PATCH',text):raise ValueError('教学材料不能包含代码补丁')
         return self
 

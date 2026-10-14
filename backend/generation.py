@@ -35,7 +35,10 @@ def put(job):
                 return current
         except KeyError:pass
         return s.put('generation',job['id'],job)
-def get(id):return s.get('generation',id)
+def get(id):
+    job=s.get('generation',id)
+    if job.get('deleted_at'):raise ValueError('记录已删除或不可用')
+    return job
 
 
 def asset(job,stage):
@@ -95,6 +98,7 @@ def create(request,policy=True,direct_build=False,handoff=False,fault_model=Fals
 
 def recover():
     for job in s.all_objects('generation'):
+        if job.get('deleted_at'):continue
         if job['status'] in ACTIVE_STATES:
             job['status']='interrupted';job['error']={'category':'interrupted','reason':'服务重启；未完成阶段不会自动重发付费请求'}
             for item in job.get('diagnostic_evidence',[]):
@@ -145,7 +149,7 @@ INSTRUCTIONS={
 'design':'评估整个 Agent 开发领域需求，不限预设模板。判断 generatable/clarify/simulation/unsupported，说明可观察触发、环境、验收依据；需模拟必须明确 simulation 范围。构造小型、确定性、多模块工程契约，仅一个主要故障。input_schema/output_schema 是基础 JSON schema（type/properties/required/additionalProperties/items/enum/description），对象优先显式字段，禁止 $ref/anyOf/minimum/maximum/minItems 等未列出的字段，数值或数量限制用 input_domain 文字说明。behaviors 是小写英文ID到中文行为约束的映射；键必须匹配 ^[a-z][a-z0-9_]{0,40}$，例如 retry_idempotency，不能使用 B1 或中文键。每次scenario都在全新容器内执行；状态恢复、记忆、版本更新等任务必须在一次JSON输入中包含整个操作序列或完整初始状态，不能设计依赖前一次scenario调用的单操作接口。不能把任意错误输出放在保留的顶层error字段。公开 symptom 描述可观察异常，足以让独立评测者构造反例；不能透露故障文件或解法。files 必含 app.py 和至少另一业务模块。不要写代码。',
 'build':'仅根据固定契约构建完整原创小项目 normal/faulty/reference 和至少两个典型错误修复 evasions；每个版本提供完全相同的完整业务文件集合，不含 solution.py。没有独立测试可供参考，不可改契约。所有版本必须可运行、返回契约结构；故障版必须在契约合法输入内真正触发公开symptom，不能只在输入域之外出错或把实际上正确的实现称为故障；正常场景保留。参考修复应满足所有契约。evasions 是合法输入范围内确实错误的修复；不能把行为等价的正确实现误列为规避。不得使用语法错误、异常或硬编码 PASS。fault_explanation/evasion_explanations 只作私有材料。精简代码，依赖仅标准库，每次 scenario 自建临时状态。',
 'evaluation':'你是独立行为评测生成阶段，未见任何实现、参考修复或构建对话。仅依据公开契约，生成4–10条固定JSON输入/期望输出。每个behavior须覆盖。公开和隐藏各至少一个target，至少一个正常regression；隐藏不得额外加要求。expected 必须完整符合输出schema，不用程序计算、不返回Python代码。至少一个target给出 faulty_expected：根据公开症状应稳定出现的错误行为完整JSON，禁止用错误/空输出冒充。其他case的faulty_expected可为null。用多组数据和边界识别典型规避；evasion_checks 用中文描述至少两种契约相关规避，不能依据某参考实现改变期望。',
- 'teaching':'执行验证已通过，但尚未人工审核。生成中文题面、恰好三级逐步提示、追问和一致性说明。公开brief只描述症状与场景，不透露故障文件/函数位置、解法或隐藏测试输入。提示逐级引导，不给完整补丁。题面会自动附完整固定契约，不能添加或降低要求。不要声称已人工认可或全面正确。'
+ 'teaching':'执行验证已通过，但尚未人工审核。生成不超过70个汉字的中文题库简介 synopsis、中文题面 brief、恰好三级逐步提示、追问和一致性说明。synopsis只概括场景和可观察症状，不包含答案、故障位置、隐藏检查或完整约束；brief只描述症状与场景，不透露故障文件/函数位置、解法或隐藏测试输入。提示逐级引导，不给完整补丁。题面会自动附完整固定契约，不能添加或降低要求。不要声称已人工认可或全面正确。'
 }
 
 
@@ -418,7 +422,7 @@ def publish(id,approved,note,review_digest):
         (staging/'private/author.json').write_text(json.dumps(review_assets(id),ensure_ascii=False))
         (staging/'public_test.py').write_text('# 公开结构化行为检查见 public_cases.json。仅平台可信解释器调用 Docker；不执行生成 pytest。\n')
         brief=teaching.brief+'\n公开症状：'+contract.symptom+'\n行为契约：'+'；'.join(contract.behaviors.values())+'\n约束：'+'；'.join(contract.constraints)+'\n输入范围：'+contract.input_domain+'\n不考察：'+'；'.join(contract.exclusions)+'\n模拟范围：'+(contract.simulation or '本地确定性工程机制')
-        manifest={'id':task_id,'version':version,'title':contract.title,'brief':brief,'tags':contract.capabilities,'minutes':contract.minutes,'estimate':f'{contract.minutes}分钟（设计估计，未校准）','source':'generated','generation_mode':job['mode'],'environment':ENVIRONMENT,'readable':['solution.py',*contract.files],'editable':contract.files,'runtime':['solution.py'],'contract':contract.model_dump(),'protocol':PROTOCOL}
+        manifest={'id':task_id,'version':version,'title':contract.title,'synopsis':teaching.synopsis or contract.scenario[:140],'brief':brief,'tags':contract.capabilities,'minutes':contract.minutes,'source':'generated','generation_mode':job['mode'],'environment':ENVIRONMENT,'readable':['solution.py',*contract.files],'editable':contract.files,'runtime':['solution.py'],'contract':contract.model_dump(),'protocol':PROTOCOL}
         if protocol.enabled(job):manifest['generation_protocol']=protocol.VERSION
         (staging/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False))
         freeze={'protocol':PROTOCOL,'job':id,'mode':job['mode'],'environment':job['matrix']['environment'],'contract_hash':job['contract_hash'],'review_digest':review_digest,'matrix':job['matrix'],'review':{'note':note,'time':time.time(),'approved':True},'hashes':{str(p.relative_to(staging)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(staging.rglob('*')) if p.is_file()}}

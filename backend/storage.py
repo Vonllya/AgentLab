@@ -72,6 +72,19 @@ def all_objects(kind, session=None):
     return [json.loads(row['body']) for row in rows]
 
 
+def removed(kind, id):
+    try:
+        get('removal',f'{kind}:{id}')
+        return True
+    except KeyError:
+        return False
+
+
+def mark_removed(kind,id,**extra):
+    marker={'id':f'{kind}:{id}','kind':kind,'target':id,'removed_at':time.time(),**extra}
+    return put('removal',marker['id'],marker)
+
+
 def event(session, role, content, **extra):
     id = ident()
     return put('event',id,dict(id=id,session=session,time=time.time(),role=role,content=content,**extra),session)

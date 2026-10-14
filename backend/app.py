@@ -49,65 +49,96 @@ def health():
     return dict(agent_mode=agent.mode(),docker_available=ready,reason=reason)
 
 @app.get('/api/tasks')
-def tasks(): return sorted(s.all_objects('task'),key=lambda task:({'rag':0,'retry':1,'resume':2,'rag_versioning':3}.get(task['id'],4),task['id']))
+def tasks(): return sorted((task for task in s.all_objects('task') if not s.removed('task',task['id'])),key=lambda task:({'rag':0,'retry':1,'resume':2,'rag_versioning':3}.get(task['id'],4),task['id']))
+
+@app.delete('/api/tasks/{id}')
+def remove_task(id:str):
+    with s.LOCK:
+        if s.removed('task',id):return {'deleted':True,'effect':'removed_from_library'}
+        s.get('task',id)
+        s.mark_removed('task',id,effect='removed_from_library')
+    return {'deleted':True,'effect':'removed_from_library'}
 
 @app.get('/api/sessions')
-def sessions(): return s.all_objects('session')
+def sessions(): return [item for item in s.all_objects('session') if not item.get('deleted_at')]
 
 @app.post('/api/sessions')
-def create(body:Create): return w.create(body.task_id)
+def create(body:Create):
+    with s.LOCK:
+        if s.removed('task',body.task_id):raise ValueError('题目已从题库移除，不能新建训练')
+        return w.create(body.task_id)
 
 @app.get('/api/sessions/{id}')
 def session(id:str):
     obj=s.get('session',id)
+    if obj.get('deleted_at'):raise HTTPException(410,'记录已删除或不可用')
     return dict(**obj,task=s.public_manifest(obj),code=w.read(obj),files=w.read_all(obj),permissions=w.permissions(obj),events=list(reversed(s.all_objects('event',id))),runs=s.all_objects('run',id),reports=s.all_objects('report',id),hints=list(reversed(s.all_objects('hint',id))))
+
+def active_session(id:str):
+    obj=s.get('session',id)
+    if obj.get('deleted_at'):raise HTTPException(410,'记录已删除或不可用')
+    return obj
+
+@app.delete('/api/sessions/{id}')
+def delete_session(id:str):
+    with s.LOCK:
+        obj=s.get('session',id)
+        if obj.get('deleted_at'):return {'deleted':True,'effect':'removed_with_training_records'}
+        if id in agent.ACTIVE:raise ValueError('Agent 正在处理消息，请等待完成后再删除')
+        if any(r.get('status') in ('queued','running') for r in s.all_objects('run',id)):raise ValueError('本会话仍有评测运行，请等待进入终态后再删除')
+        if any(r.get('feedback_status')=='generating' for r in s.all_objects('report',id)):raise ValueError('训练反馈仍在生成，请等待完成后再删除')
+        obj['deleted_at']=__import__('time').time();s.put('session',id,obj)
+    return {'deleted':True,'effect':'removed_with_training_records'}
 
 @app.put('/api/sessions/{id}/files')
 def save(id:str,body:Save):
     with s.LOCK:
-        obj=s.get('session',id)
+        obj=active_session(id)
         if (body.code is None)==(body.files is None): raise ValueError('请提供 code 或 files 之一')
         w.save_files(obj,body.files if body.files is not None else {'solution.py':body.code},body.diagnosis)
     return {'saved':True}
 
 @app.get('/api/sessions/{id}/files')
 def files(id:str,path:str='solution.py'):
-    return {'path':path,'content':w.safe_file(s.get('session',id),path).read_text()}
+    return {'path':path,'content':w.safe_file(active_session(id),path).read_text()}
 
 @app.get('/api/sessions/{id}/public-tests')
 def public_tests(id:str):
-    p=s.package(s.get('session',id))
+    p=s.package(active_session(id))
     return {'test':(p/'public_test.py').read_text(),'cases':json.loads((p/'public_cases.json').read_text())}
 
 @app.post('/api/sessions/{id}/runs')
-def run(id:str): return runs.start(s.get('session',id),'public')
+def run(id:str): return runs.start(active_session(id),'public')
 
 @app.post('/api/sessions/{id}/submit')
-def submit(id:str): return runs.start(s.get('session',id),'submission')
+def submit(id:str): return runs.start(active_session(id),'submission')
 
 @app.get('/api/runs/{id}')
-def get_run(id:str): return s.get('run',id)
+def get_run(id:str):
+    run=s.get('run',id);active_session(run['session']);return run
 
 @app.get('/api/reports/{id}')
-def report(id:str): return s.get('report',id)
+def report(id:str):
+    report=s.get('report',id);active_session(report['session']);return report
 
 @app.get('/api/sessions/{id}/snapshots/{snapshot}')
 def snapshot(id:str,snapshot:str):
+    active_session(id)
     if not any(r['snapshot']==snapshot for r in s.all_objects('run',id)):
         raise HTTPException(404,'此会话没有该快照')
-    obj=s.get('session',id)
+    obj=active_session(id)
     contents=w.snapshot_contents(obj,snapshot)
     return {'snapshot':snapshot,'code':contents['solution.py'],'files':contents,'task_id':obj['task_id'],'version':obj['version']}
 
 @app.post('/api/sessions/{id}/hint')
 def hint(id:str):
-    obj=s.get('session',id)
+    obj=active_session(id)
     result=agent.hint(obj)
     s.event(id,'assistant',f"提示 {result['level']}/3：{result['text']}",hint_id=result['id'])
     return result
 
 @app.post('/api/sessions/{id}/chat')
-def chat(id:str,body:Chat): return agent.chat(s.get('session',id),body.message)
+def chat(id:str,body:Chat): return agent.chat(active_session(id),body.message)
 
 # Authoring routes are separate from training tools and file APIs.
 from . import generation as g
@@ -122,13 +153,25 @@ class Publish(Strict):
     review_digest:str=Field(pattern='^[a-f0-9]{64}$')
 
 @app.get('/api/generation/jobs')
-def generation_jobs():return [g.public(j) for j in s.all_objects('generation')]
+def generation_jobs():return [g.public(j) for j in s.all_objects('generation') if not j.get('deleted_at')]
 
 @app.post('/api/generation/jobs')
 def generation_create(body:GenerationRequest):return g.public(g.create(body,direct_build=True,handoff=True,fault_model=True))
 
 @app.get('/api/generation/jobs/{id}')
-def generation_job(id:str):return g.public(g.get(id))
+def generation_job(id:str):
+    job=s.get('generation',id)
+    if job.get('deleted_at'):raise HTTPException(410,'记录已删除或不可用')
+    return g.public(job)
+
+@app.delete('/api/generation/jobs/{id}')
+def generation_delete(id:str):
+    with s.LOCK:
+        job=s.get('generation',id)
+        if job.get('deleted_at'):return {'deleted':True,'effect':'record_hidden_assets_retained'}
+        if job['status'] in g.ACTIVE_STATES:raise ValueError('生成仍在运行，请先取消并等待进入终态后再删除')
+        job['deleted_at']=__import__('time').time();s.put('generation',id,job)
+    return {'deleted':True,'effect':'record_hidden_assets_retained'}
 
 @app.post('/api/generation/jobs/{id}/analyze')
 def generation_analyze(id:str):return g.analyze(id)
@@ -146,7 +189,9 @@ def generation_retry(id:str):return g.retry(id)
 def generation_cancel(id:str):return g.cancel(id)
 
 @app.get('/api/author/generation/{id}')
-def generation_review(id:str):return g.review_assets(id)
+def generation_review(id:str):
+    if s.get('generation',id).get('deleted_at'):raise HTTPException(410,'记录已删除或不可用')
+    return g.review_assets(id)
 
 @app.post('/api/author/generation/{id}/publish')
 def generation_publish(id:str,body:Publish):return g.publish(id,body.approved,body.note,body.review_digest)
