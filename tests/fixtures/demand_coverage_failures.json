@@ -1,0 +1,980 @@
+[
+  {
+    "sample": 1,
+    "request": {
+      "requirement": "我想练习 Agent 调用本地模拟工单工具时的超时重试问题：工具已经创建工单，但响应丢失，Agent 重试后出现重复工单。请生成一个能稳定复现这一主要故障的小型 Python 工程。正常行为需要保留暂时失败后的有限重试；同一个逻辑操作的重试只能创建一条工单，两个不同逻辑操作即使内容相同也不能合并。逻辑操作由请求中的 operation_id 区分。希望能验证正常成功、写入前暂时失败、写入后响应丢失以及连续暂时失败后的明确失败结果。输入提供完整工单内容和确定性故障序列，能观察创建记录与实际调用次数。只使用标准库和本地确定性模拟，不访问真实业务服务，不考察并发、进程崩溃或不同请求复用同一个 operation_id 却改变内容的情况。",
+      "minutes": 20,
+      "difficulty": "",
+      "preference": ""
+    },
+    "bundle": {
+      "assessment": "generatable",
+      "rationale": "The requirement is unambiguous: a deterministic standard-library local simulated ticket tool with finite retries, operation_id idempotency, and fault-sequence injection. One logical operation per scenario is sufficient to observe record counts and actual call counts. The fault can be isolated to the write_then_lost path.",
+      "questions": [],
+      "contract": {
+        "title": "Ticket Tool Timeout Retry with Lost-Response Duplication",
+        "scenario": "An Agent calls a local simulated ticket tool up to three times. The input supplies one operation_id, full ticket content, and an optional deterministic fault_sequence. Each attempt takes the next outcome from fault_sequence; missing entries are treated as success. The Agent must retry on temporary errors and lost responses, stop on the first success, and return failure after three non-success attempts. The returned JSON exposes status, actual_calls, and created ticket records.",
+        "symptom": "When fault_sequence is [\"write_then_lost\"], the returned records array contains two ticket records for the same operation_id instead of one. The duplicate records have ticket_id suffixes from attempt 1 and attempt 2, while actual_calls is 2. This shows the Agent created a second ticket after the first response was lost.",
+        "capabilities": [
+          "deterministic retry simulation",
+          "fault-sequence injection",
+          "in-memory ticket records",
+          "operation_id-based idempotency",
+          "observable actual_calls count",
+          "standard-library-only local tool"
+        ],
+        "minutes": 20,
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "operation_id": {
+              "type": "string",
+              "description": "Stable logical operation identifier used as the idempotency key."
+            },
+            "ticket": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "description": "Short ticket title."
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Full ticket description."
+                }
+              },
+              "required": [
+                "title",
+                "description"
+              ],
+              "additionalProperties": false
+            },
+            "fault_sequence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "success",
+                  "temporary_error",
+                  "write_then_lost"
+                ]
+              },
+              "description": "Optional ordered outcome queue for tool call attempts."
+            }
+          },
+          "required": [
+            "operation_id",
+            "ticket"
+          ],
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "success",
+                "failure"
+              ]
+            },
+            "actual_calls": {
+              "type": "integer"
+            },
+            "records": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "ticket_id": {
+                    "type": "string"
+                  },
+                  "operation_id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ticket_id",
+                  "operation_id",
+                  "title",
+                  "description"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "status",
+            "actual_calls",
+            "records"
+          ],
+          "additionalProperties": false
+        },
+        "behaviors": {
+          "retry_limit": "The simulated Agent calls the local ticket tool at most three times per scenario.",
+          "deterministic_outcomes": "Each attempt outcome is taken directly from fault_sequence; missing entries are success.",
+          "idempotency_by_operation": "Within a scenario, retries for the same operation_id must create at most one ticket record, even when the response is lost after a write.",
+          "operation_separation": "Different operation_id values are independent and must not be merged by identical ticket content.",
+          "temporary_failure": "A temporary_error attempt creates no ticket and causes another attempt until the limit is reached.",
+          "lost_write": "A write_then_lost attempt has written the ticket but no success response was received, so the Agent retries."
+        },
+        "constraints": [
+          "Use only the Python standard library; no network, no disk persistence, no subprocess calls.",
+          "No randomness, no time-based behavior; every output is a deterministic function of the input.",
+          "The simulation is in-memory and fresh for each scenario.",
+          "All input is untrusted; the code must not read files, environment variables, secrets, or execute arbitrary commands.",
+          "Do not use exceptions, timeouts, or syntax errors as the observable symptom.",
+          "The only retryable outcomes are temporary_error and write_then_lost.",
+          "No concurrency, no process crash, and no cross-scenario state."
+        ],
+        "input_domain": "operation_id: non-empty string, max 64 characters, stable per logical operation. ticket.title: non-empty string, max 200 characters. ticket.description: non-empty string, max 1000 characters. fault_sequence: optional JSON array of length 0 to 3, items one of success, temporary_error, write_then_lost; missing entries default to success. Attempts execute in order from index 0, and the scenario stops on the first success or after three non-success attempts. actual_calls is between 1 and 3 inclusive. records length is between 0 and 3 inclusive. ticket_id format is ticket-{operation_id}-{attempt_number} where attempt_number is the attempt that performed the write. Invalid input causes a deterministic ValueError before any ticket tool state is created.",
+        "exclusions": [
+          "Real ticket services, HTTP, or network calls",
+          "Concurrent or multi-threaded tool calls",
+          "Process crash or OS-level fault injection",
+          "Reusing one operation_id with changed content",
+          "Merging tickets by title or description instead of operation_id",
+          "Randomized delays, jitter, or time-based nondeterminism",
+          "Reading configuration files or environment secrets",
+          "Using auxiliary logs as the primary symptom"
+        ],
+        "files": [
+          "app.py",
+          "ticket_tool.py"
+        ],
+        "simulation": "Each scenario is a fresh in-memory process, so no records persist across runs. For attempt number i from 1 to 3, if i <= len(fault_sequence), the outcome is fault_sequence[i-1]; otherwise the outcome is success. success returns immediately. temporary_error creates no record and retries. write_then_lost has written the ticket but the caller receives no success response and retries. Correct observable behavior for operation_id 'op-1': fault_sequence [] returns status success, actual_calls 1, one record ticket-op-1-1; ['temporary_error','temporary_error','temporary_error'] returns status failure, actual_calls 3, records []; ['write_then_lost'] returns status success, actual_calls 2, one record ticket-op-1-1. A faulty implementation may return two records for the last case. Each created record's operation_id is the input operation_id; its title is copied from input ticket.title; its description is copied from input ticket.description. For example, with input operation_id 'op-1' and ticket title 'T' and description 'D', any record has operation_id 'op-1', title 'T', and description 'D'."
+      },
+      "faulty": {
+        "app.py": "\"\"\"Entry point for the deterministic ticket retry simulation.\"\"\"\n\nfrom ticket_tool import TicketTool\n\nMAX_ATTEMPTS = 3\n\n\ndef scenario(data):\n    operation_id = data[\"operation_id\"]\n    ticket = data[\"ticket\"]\n    fault_sequence = data.get(\"fault_sequence\", [])\n\n    if not isinstance(operation_id, str) or not operation_id:\n        raise ValueError(\"operation_id must be a non-empty string\")\n    if not isinstance(ticket, dict):\n        raise ValueError(\"ticket must be an object\")\n\n    title = ticket.get(\"title\")\n    description = ticket.get(\"description\")\n    if not isinstance(title, str) or not title:\n        raise ValueError(\"ticket.title must be a non-empty string\")\n    if not isinstance(description, str) or not description:\n        raise ValueError(\"ticket.description must be a non-empty string\")\n\n    if not isinstance(fault_sequence, list):\n        raise ValueError(\"fault_sequence must be an array\")\n    if len(fault_sequence) > MAX_ATTEMPTS:\n        raise ValueError(\"fault_sequence length cannot exceed 3\")\n\n    valid_outcomes = {\"success\", \"temporary_error\", \"write_then_lost\"}\n    for item in fault_sequence:\n        if item not in valid_outcomes:\n            raise ValueError(\"invalid fault_sequence item: %r\" % (item,))\n\n    tool = TicketTool()\n    actual_calls = 0\n\n    for attempt in range(1, MAX_ATTEMPTS + 1):\n        if attempt <= len(fault_sequence):\n            outcome = fault_sequence[attempt - 1]\n        else:\n            outcome = \"success\"\n\n        result = tool.call(operation_id, ticket, outcome, attempt)\n        actual_calls += 1\n\n        if result[\"status\"] == \"success\":\n            return {\n                \"status\": \"success\",\n                \"actual_calls\": actual_calls,\n                \"records\": list(tool.records),\n            }\n\n        if result[\"status\"] in (\"temporary_error\", \"lost_after_write\"):\n            continue\n\n    return {\n        \"status\": \"failure\",\n        \"actual_calls\": actual_calls,\n        \"records\": list(tool.records),\n    }",
+        "ticket_tool.py": "\"\"\"Deterministic local ticket tool used by the retry simulation.\"\"\"\n\n\nclass TicketTool:\n    def __init__(self):\n        self.records = []\n        self._by_operation = {}\n\n    def _new_record(self, operation_id, ticket, attempt):\n        return {\n            \"ticket_id\": \"ticket-%s-%s\" % (operation_id, attempt),\n            \"operation_id\": operation_id,\n            \"title\": ticket[\"title\"],\n            \"description\": ticket[\"description\"],\n        }\n\n    def _record_success(self, operation_id, ticket, attempt):\n        existing = self._by_operation.get(operation_id)\n        if existing is not None:\n            return existing\n\n        record = self._new_record(operation_id, ticket, attempt)\n        self.records.append(record)\n        self._by_operation[operation_id] = record\n        return record\n\n    def _record_write_then_lost(self, operation_id, ticket, attempt):\n        # Main fault: write the ticket but deliberately do not register\n        # the operation_id in the idempotency store. A later success attempt\n        # therefore creates another record for the same logical operation.\n        record = self._new_record(operation_id, ticket, attempt)\n        self.records.append(record)\n        return record\n\n    def call(self, operation_id, ticket, outcome, attempt):\n        if outcome == \"temporary_error\":\n            return {\"status\": \"temporary_error\"}\n\n        if outcome == \"write_then_lost\":\n            record = self._record_write_then_lost(operation_id, ticket, attempt)\n            return {\"status\": \"lost_after_write\", \"record\": record}\n\n        record = self._record_success(operation_id, ticket, attempt)\n        return {\"status\": \"success\", \"record\": record}"
+      },
+      "private_fault_requirements": "The only fault is in TicketTool._record_write_then_lost: it appends a newly written ticket record but deliberately does not register operation_id in _by_operation. Therefore a later success attempt for the same operation_id creates a second record. All other paths must remain correct: temporary_error creates no record and retries; success checks the idempotency store; attempts are limited to three; three temporary_error outcomes return status failure with empty records; different operation_ids are never merged. Keep this exact mechanism and do not introduce any additional fault.",
+      "symptom_paths": [
+        [
+          "records"
+        ],
+        [
+          "records",
+          "1",
+          "ticket_id"
+        ]
+      ]
+    },
+    "evaluation": {
+      "cases": [
+        {
+          "id": "baseline_success",
+          "group": "regression",
+          "visibility": "public",
+          "covers": [
+            "deterministic_outcomes"
+          ],
+          "input": {
+            "operation_id": "op-empty",
+            "ticket": {
+              "title": "T",
+              "description": "D"
+            },
+            "fault_sequence": []
+          },
+          "expected": {
+            "status": "success",
+            "actual_calls": 1,
+            "records": [
+              {
+                "ticket_id": "ticket-op-empty-1",
+                "operation_id": "op-empty",
+                "title": "T",
+                "description": "D"
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Baseline no-fault success verifies default success and field mapping without triggering lost-response duplication."
+        },
+        {
+          "id": "lost_write_basic",
+          "group": "target",
+          "visibility": "public",
+          "covers": [
+            "lost_write",
+            "idempotency_by_operation",
+            "deterministic_outcomes"
+          ],
+          "input": {
+            "operation_id": "op-lost",
+            "ticket": {
+              "title": "T",
+              "description": "D"
+            },
+            "fault_sequence": [
+              "write_then_lost"
+            ]
+          },
+          "expected": {
+            "status": "success",
+            "actual_calls": 2,
+            "records": [
+              {
+                "ticket_id": "ticket-op-lost-1",
+                "operation_id": "op-lost",
+                "title": "T",
+                "description": "D"
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Targets primary lost-write duplicate; write_then_lost must create only one record for the same operation and retry once before success."
+        },
+        {
+          "id": "temporary_errors_fail",
+          "group": "regression",
+          "visibility": "public",
+          "covers": [
+            "temporary_failure",
+            "retry_limit"
+          ],
+          "input": {
+            "operation_id": "op-temp",
+            "ticket": {
+              "title": "T",
+              "description": "D"
+            },
+            "fault_sequence": [
+              "temporary_error",
+              "temporary_error",
+              "temporary_error"
+            ]
+          },
+          "expected": {
+            "status": "failure",
+            "actual_calls": 3,
+            "records": []
+          },
+          "faulty_expected": null,
+          "classification_reason": "All temporary outcomes trigger retries until the limit; no ticket is created and the scenario fails without lost-write duplication."
+        },
+        {
+          "id": "operation_sep_a",
+          "group": "regression",
+          "visibility": "public",
+          "covers": [
+            "operation_separation"
+          ],
+          "input": {
+            "operation_id": "op-sep-a",
+            "ticket": {
+              "title": "Shared title",
+              "description": "Shared description"
+            },
+            "fault_sequence": [
+              "success"
+            ]
+          },
+          "expected": {
+            "status": "success",
+            "actual_calls": 1,
+            "records": [
+              {
+                "ticket_id": "ticket-op-sep-a-1",
+                "operation_id": "op-sep-a",
+                "title": "Shared title",
+                "description": "Shared description"
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Same-content control for operation separation; this operation should yield only its own record and not be merged by title or description."
+        },
+        {
+          "id": "lost_write_interleaved",
+          "group": "target",
+          "visibility": "hidden",
+          "covers": [
+            "lost_write",
+            "temporary_failure",
+            "idempotency_by_operation",
+            "deterministic_outcomes"
+          ],
+          "input": {
+            "operation_id": "op-complex",
+            "ticket": {
+              "title": "T",
+              "description": "D"
+            },
+            "fault_sequence": [
+              "write_then_lost",
+              "temporary_error"
+            ]
+          },
+          "expected": {
+            "status": "success",
+            "actual_calls": 3,
+            "records": [
+              {
+                "ticket_id": "ticket-op-complex-1",
+                "operation_id": "op-complex",
+                "title": "T",
+                "description": "D"
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Targets duplication after a lost write followed by a temporary retry and default success; only the first write may produce a ticket record."
+        },
+        {
+          "id": "lost_write_twice",
+          "group": "target",
+          "visibility": "hidden",
+          "covers": [
+            "lost_write",
+            "idempotency_by_operation",
+            "deterministic_outcomes"
+          ],
+          "input": {
+            "operation_id": "op-multi-lost",
+            "ticket": {
+              "title": "T",
+              "description": "D"
+            },
+            "fault_sequence": [
+              "write_then_lost",
+              "write_then_lost"
+            ]
+          },
+          "expected": {
+            "status": "success",
+            "actual_calls": 3,
+            "records": [
+              {
+                "ticket_id": "ticket-op-multi-lost-1",
+                "operation_id": "op-multi-lost",
+                "title": "T",
+                "description": "D"
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Targets repeated lost writes before default success; idempotency must keep one ticket record from the first write."
+        },
+        {
+          "id": "missing_entries_success",
+          "group": "regression",
+          "visibility": "hidden",
+          "covers": [
+            "temporary_failure",
+            "deterministic_outcomes"
+          ],
+          "input": {
+            "operation_id": "op-det",
+            "ticket": {
+              "title": "T",
+              "description": "D"
+            },
+            "fault_sequence": [
+              "temporary_error"
+            ]
+          },
+          "expected": {
+            "status": "success",
+            "actual_calls": 2,
+            "records": [
+              {
+                "ticket_id": "ticket-op-det-2",
+                "operation_id": "op-det",
+                "title": "T",
+                "description": "D"
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "After one temporary error, the missing next outcome defaults to success and writes the ticket on attempt two; no lost-write duplication is involved."
+        },
+        {
+          "id": "retry_limit_success",
+          "group": "regression",
+          "visibility": "hidden",
+          "covers": [
+            "temporary_failure",
+            "retry_limit",
+            "deterministic_outcomes"
+          ],
+          "input": {
+            "operation_id": "op-limit-ok",
+            "ticket": {
+              "title": "T",
+              "description": "D"
+            },
+            "fault_sequence": [
+              "temporary_error",
+              "temporary_error"
+            ]
+          },
+          "expected": {
+            "status": "success",
+            "actual_calls": 3,
+            "records": [
+              {
+                "ticket_id": "ticket-op-limit-ok-3",
+                "operation_id": "op-limit-ok",
+                "title": "T",
+                "description": "D"
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Two temporary errors followed by default success reach the third attempt and write a ticket on the final attempt; verifies retry limit without lost-write fault."
+        },
+        {
+          "id": "operation_sep_b",
+          "group": "regression",
+          "visibility": "hidden",
+          "covers": [
+            "operation_separation"
+          ],
+          "input": {
+            "operation_id": "op-sep-b",
+            "ticket": {
+              "title": "Shared title",
+              "description": "Shared description"
+            },
+            "fault_sequence": [
+              "success"
+            ]
+          },
+          "expected": {
+            "status": "success",
+            "actual_calls": 1,
+            "records": [
+              {
+                "ticket_id": "ticket-op-sep-b-1",
+                "operation_id": "op-sep-b",
+                "title": "Shared title",
+                "description": "Shared description"
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Second operation_id with the same ticket content remains independent; expected only its own record and no title-based merge."
+        }
+      ],
+      "evasion_checks": [
+        "records contain at most one ticket for a given operation_id across lost-write retries",
+        "actual_calls reflects consumed attempts: first success index or 3 when all attempts are retryable failures",
+        "ticket_id attempt number matches the write attempt, not the success response attempt",
+        "temporary_error attempts create no records and never stop retry while under the limit",
+        "different operation_id values do not merge records even with identical ticket content"
+      ]
+    },
+    "reference": {
+      "app.py": "\"\"\"Entry point for the deterministic ticket retry simulation.\"\"\"\n\nfrom ticket_tool import TicketTool\n\nMAX_ATTEMPTS = 3\n\n\ndef scenario(data):\n    operation_id = data[\"operation_id\"]\n    ticket = data[\"ticket\"]\n    fault_sequence = data.get(\"fault_sequence\", [])\n\n    if not isinstance(operation_id, str) or not operation_id:\n        raise ValueError(\"operation_id must be a non-empty string\")\n    if not isinstance(ticket, dict):\n        raise ValueError(\"ticket must be an object\")\n\n    title = ticket.get(\"title\")\n    description = ticket.get(\"description\")\n    if not isinstance(title, str) or not title:\n        raise ValueError(\"ticket.title must be a non-empty string\")\n    if not isinstance(description, str) or not description:\n        raise ValueError(\"ticket.description must be a non-empty string\")\n\n    if not isinstance(fault_sequence, list):\n        raise ValueError(\"fault_sequence must be an array\")\n    if len(fault_sequence) > MAX_ATTEMPTS:\n        raise ValueError(\"fault_sequence length cannot exceed 3\")\n\n    valid_outcomes = {\"success\", \"temporary_error\", \"write_then_lost\"}\n    for item in fault_sequence:\n        if item not in valid_outcomes:\n            raise ValueError(\"invalid fault_sequence item: %r\" % (item,))\n\n    tool = TicketTool()\n    actual_calls = 0\n\n    for attempt in range(1, MAX_ATTEMPTS + 1):\n        if attempt <= len(fault_sequence):\n            outcome = fault_sequence[attempt - 1]\n        else:\n            outcome = \"success\"\n\n        result = tool.call(operation_id, ticket, outcome, attempt)\n        actual_calls += 1\n\n        if result[\"status\"] == \"success\":\n            return {\n                \"status\": \"success\",\n                \"actual_calls\": actual_calls,\n                \"records\": list(tool.records),\n            }\n\n        if result[\"status\"] in (\"temporary_error\", \"lost_after_write\"):\n            continue\n\n    return {\n        \"status\": \"failure\",\n        \"actual_calls\": actual_calls,\n        \"records\": list(tool.records),\n    }",
+      "ticket_tool.py": "\"\"\"Deterministic local ticket tool used by the retry simulation.\"\"\"\n\n\nclass TicketTool:\n    def __init__(self):\n        self.records = []\n        self._by_operation = {}\n\n    def _new_record(self, operation_id, ticket, attempt):\n        return {\n            \"ticket_id\": \"ticket-%s-%s\" % (operation_id, attempt),\n            \"operation_id\": operation_id,\n            \"title\": ticket[\"title\"],\n            \"description\": ticket[\"description\"],\n        }\n\n    def _record_success(self, operation_id, ticket, attempt):\n        existing = self._by_operation.get(operation_id)\n        if existing is not None:\n            return existing\n\n        record = self._new_record(operation_id, ticket, attempt)\n        self.records.append(record)\n        self._by_operation[operation_id] = record\n        return record\n\n    def _record_write_then_lost(self, operation_id, ticket, attempt):\n        existing = self._by_operation.get(operation_id)\n        if existing is not None:\n            return existing\n\n        record = self._new_record(operation_id, ticket, attempt)\n        self.records.append(record)\n        self._by_operation[operation_id] = record\n        return record\n\n    def call(self, operation_id, ticket, outcome, attempt):\n        if outcome == \"temporary_error\":\n            return {\"status\": \"temporary_error\"}\n\n        if outcome == \"write_then_lost\":\n            record = self._record_write_then_lost(operation_id, ticket, attempt)\n            return {\"status\": \"lost_after_write\", \"record\": record}\n\n        record = self._record_success(operation_id, ticket, attempt)\n        return {\"status\": \"success\", \"record\": record}"
+    },
+    "evasions": {},
+    "build_sha256": "ccc549170dc10c0c6b7be010de25e611b79e839fe37017457300cb34967a7bdd",
+    "evaluation_sha256": "15c956cbb3527fe24f117876cf00afe46885769d4711614576687bdbaa890c59"
+  },
+  {
+    "sample": 5,
+    "request": {
+      "requirement": "我想练习 Agent 批处理工作流的中断恢复：流程依次准备数据、转换数据、生成结果，其中某些步骤已经完成并保存状态，恢复后却重复执行，产生重复的处理记录。请生成一个以这个问题为主要故障的小型 Python 工程。正常行为应在恢复时跳过已完成步骤，按原顺序执行剩余步骤；完整流程再次恢复应没有新增副作用，不同工作流实例的状态必须隔离。输入应能选择在各个步骤完成状态已持久化之后中断，并可在一次场景内多次恢复；用本地持久化的步骤执行记录验证是否重复，关闭重开存储后行为也应一致。只用标准库和容器临时目录，不接触外部服务，不考察写入副作用与保存完成状态之间的崩溃窗口，也不要求并发或分布式 exactly-once。",
+      "minutes": 20,
+      "difficulty": "",
+      "preference": ""
+    },
+    "bundle": {
+      "assessment": "generatable",
+      "rationale": "The requested fault can be realized as a deterministic, standard-library-only Python project using local JSON persistence and simulated close/reopen between resume actions. No missing runtime requirements or ambiguous platform decisions remain because the scenario is self-contained and the public contract can specify exact comparison fields.",
+      "questions": [],
+      "contract": {
+        "title": "Batch Workflow Resume Duplicate Execution",
+        "scenario": "A workflow has three ordered steps: prepare, transform, generate. Each completed step appends a persisted record and sets that step status to completed. The scenario accepts an instance_id and an ordered list of actions. action=run starts an initial run; action=resume simulates recovery. Each action object may include stop_after with values none, prepare, or transform, meaning the action stops after that named step is persisted. After each action the storage file is saved and, before the next action, a fresh store object reads the same file, simulating storage close/reopen. Multiple actions are processed within a single scenario call. Workflow instances are isolated by instance_id. Normal expected behavior: on resume, already completed steps are skipped, and only remaining steps execute in original order; a resume with no pending steps adds no new records.",
+        "symptom": "After resuming from a persisted prepare or transform completion, the workflow re-executes already completed steps. duplicate_counts for those steps becomes greater than 0 and records contains repeated step entries, while the correct implementation would keep duplicate_counts at 0 for unchanged completed steps.",
+        "capabilities": [
+          "python-stdlib",
+          "json-file-persistence",
+          "multi-step-batch-workflow",
+          "deterministic-output"
+        ],
+        "minutes": 20,
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "instance_id": {
+              "type": "string",
+              "description": "Workflow instance ID; determines the isolated persistence file."
+            },
+            "actions": {
+              "type": "array",
+              "description": "Ordered actions to process in one scenario call.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "run",
+                      "resume"
+                    ],
+                    "description": "run starts a new run; resume is a recovery attempt."
+                  },
+                  "stop_after": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "prepare",
+                      "transform"
+                    ],
+                    "description": "Stop after the named step is persisted; none means stop at the end."
+                  }
+                },
+                "required": [
+                  "action"
+                ]
+              }
+            }
+          },
+          "required": [
+            "instance_id",
+            "actions"
+          ]
+        },
+        "output_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "records": {
+              "type": "array",
+              "description": "All persisted execution records in sequence order.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "sequence": {
+                    "type": "integer",
+                    "description": "One-based append order of the record."
+                  },
+                  "instance_id": {
+                    "type": "string"
+                  },
+                  "step": {
+                    "type": "string",
+                    "enum": [
+                      "prepare",
+                      "transform",
+                      "generate"
+                    ]
+                  }
+                },
+                "required": [
+                  "sequence",
+                  "instance_id",
+                  "step"
+                ]
+              }
+            },
+            "status": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "prepare": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "completed"
+                  ]
+                },
+                "transform": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "completed"
+                  ]
+                },
+                "generate": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "completed"
+                  ]
+                }
+              },
+              "required": [
+                "prepare",
+                "transform",
+                "generate"
+              ]
+            },
+            "duplicate_counts": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "prepare": {
+                  "type": "integer"
+                },
+                "transform": {
+                  "type": "integer"
+                },
+                "generate": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "prepare",
+                "transform",
+                "generate"
+              ]
+            }
+          },
+          "required": [
+            "records",
+            "status",
+            "duplicate_counts"
+          ]
+        },
+        "behaviors": {
+          "run": "A run action always obtains the fresh persisted store for instance_id. If the store has no records and all statuses are pending, run starts a new workflow and executes the steps in fixed order beginning at prepare. If the store already contains any completed status or record for the same instance_id, run is treated exactly like resume: it must not reset records or statuses, must skip completed steps, must execute only pending steps in order, and must use the same stop_after semantics as resume. Run never deletes existing records and never ignores persisted completed status.",
+          "resume": "Each resume action loads the persisted state through a fresh store for the instance_id. It then iterates steps in the fixed order prepare, transform, generate. If status[step] is 'completed', the step is skipped: no record is added, no status changes, and no save occurs. If status[step] is 'pending', the step is executed exactly once and persisted. stop_after is evaluated only after the current action actually executes a pending step; if stop_after matches that step, the action stops immediately after saving that step. stop_after=none runs until all pending steps are done. If stop_after names a step that is already completed at the start of the action, the skip does not satisfy the stop condition; the action continues with the next pending step and stops only when it later executes a pending step with that name, or reaches the end. With an empty store, all three steps are pending and resume starts at prepare.",
+          "persist": "After a pending step is actually executed during an action, storage must append a record object with sequence equal to the current number of existing records plus one (one-based append order, never reset), step equal to the executed step name, and instance_id equal to the exact instance_id string value from the scenario input as decoded from JSON (not the sanitized filename digest). Then it must set status[step] = 'completed' and save status and records to the same instance JSON file before the next action starts. Already completed steps must not append records, must not change status, and must not save.",
+          "close_reopen": "Each action uses a fresh store object reading the same JSON file, simulating storage close/reopen."
+        },
+        "constraints": [
+          "Only Python standard library may be used.",
+          "Persistence must use a JSON file in tempfile.gettempdir(), isolated by instance_id.",
+          "No external services, network, or user-provided paths.",
+          "State updates and actions must complete within one scenario call.",
+          "No crash-window between side effect and completed-state persistence.",
+          "No concurrent or distributed exactly-once requirements.",
+          "Input data must be treated as untrusted and must not cause an unhandled crash."
+        ],
+        "input_domain": "instance_id is a string; arbitrary values are sanitized only for filename derivation and do not affect record identity. actions is an ordered list of 1 to 12 action objects. Each action has action=run/resume; stop_after defaults to none and is one of none/prepare/transform. If stop_after is prepare, the action stops after prepare has been recorded and persisted; if transform, it stops after transform. run and resume actions use the same stop_after semantics. Invalid action values are treated as resume and invalid stop_after values as none. Records sequence numbers start at 1 and increment by 1 after each completed step. duplicate_counts[step] = max(0, execution_count(step) - 1). Status is pending until the first execution record for that step.",
+        "exclusions": [
+          "Crash window between write side effect and saved completion status",
+          "Concurrent or distributed exactly-once execution",
+          "External services or network",
+          "Recovery after process kill; only simulated close/reopen is in scope",
+          "Backward compatibility with pre-existing state file formats"
+        ],
+        "files": [
+          "app.py",
+          "workflow.py",
+          "storage.py"
+        ],
+        "simulation": "State file: tempfile.gettempdir()/batch_wf_<first24hex(sha256('batch-workflow:'+instance_id))>.json. Before each action, a fresh store reads this file; after each completed step add_record saves the file. Step order is prepare, transform, generate. sequence is one-based append order. status becomes completed after the first record for that step. duplicate_counts[step]=max(0,count_of_records(step)-1). Invalid action is treated as resume; invalid stop_after is treated as none. Example: instance_id 'wf-1', actions [{'action':'run','stop_after':'prepare'}, {'action':'resume','stop_after':'transform'}, {'action':'resume'}]. Correct output: records contain prepare, transform, generate exactly once; status all completed; duplicate_counts all 0. Faulty output: records count 6 with prepare repeated three times and transform twice; duplicate_counts prepare=2, transform=1, generate=0."
+      },
+      "faulty": {
+        "app.py": "import hashlib\nimport os\nimport tempfile\n\nfrom storage import PersistentStore\nfrom workflow import Workflow\n\n_STEPS = (\"prepare\", \"transform\", \"generate\")\n\n\ndef _file_path(instance_id):\n    digest = hashlib.sha256((\"batch-workflow:\" + instance_id).encode(\"utf-8\")).hexdigest()[:24]\n    return os.path.join(tempfile.gettempdir(), \"batch_wf_\" + digest + \".json\")\n\n\ndef _normalise_actions(raw_actions):\n    actions = []\n    if not isinstance(raw_actions, list):\n        return actions\n    for raw in raw_actions:\n        if not isinstance(raw, dict):\n            continue\n        action = raw.get(\"action\", \"resume\")\n        if action not in (\"run\", \"resume\"):\n            action = \"resume\"\n        stop_after = raw.get(\"stop_after\", \"none\")\n        if stop_after not in (\"none\", \"prepare\", \"transform\"):\n            stop_after = \"none\"\n        actions.append({\"action\": action, \"stop_after\": stop_after})\n    return actions\n\n\ndef scenario(data):\n    data = data if isinstance(data, dict) else {}\n    instance_id = str(data.get(\"instance_id\", \"default\"))\n    file_path = _file_path(instance_id)\n    actions = _normalise_actions(data.get(\"actions\"))\n\n    for action in actions:\n        store = PersistentStore(file_path)\n        workflow = Workflow(store, instance_id)\n        workflow.execute(action[\"action\"], action[\"stop_after\"])\n\n    store = PersistentStore(file_path)\n    counts = {}\n    for record in store.records:\n        step = record.get(\"step\")\n        if step in _STEPS:\n            counts[step] = counts.get(step, 0) + 1\n\n    duplicate_counts = {\n        step: max(0, counts.get(step, 0) - 1)\n        for step in _STEPS\n    }\n    status = {\n        step: store.status.get(step, \"pending\")\n        for step in _STEPS\n    }\n\n    return {\n        \"records\": store.records,\n        \"status\": status,\n        \"duplicate_counts\": duplicate_counts,\n    }",
+        "workflow.py": "class Workflow:\n    STEPS = (\"prepare\", \"transform\", \"generate\")\n\n    def __init__(self, store, instance_id):\n        self.store = store\n        self.instance_id = instance_id\n\n    def execute(self, action, stop_after):\n        # Intentionally ignores persisted status: every step is always executed.\n        for step in self.STEPS:\n            self.store.add_record(self.instance_id, step)\n            if stop_after == step:\n                break\n        self.store.save()",
+        "storage.py": "import json\nimport os\n\n\nclass PersistentStore:\n    _STEPS = (\"prepare\", \"transform\", \"generate\")\n\n    def __init__(self, filepath):\n        self.filepath = filepath\n        self.records = []\n        self.status = {\"prepare\": \"pending\", \"transform\": \"pending\", \"generate\": \"pending\"}\n        self.load()\n\n    def load(self):\n        data = None\n        try:\n            with open(self.filepath, \"r\", encoding=\"utf-8\") as f:\n                data = json.load(f)\n        except (OSError, ValueError):\n            data = None\n\n        if isinstance(data, dict):\n            records = data.get(\"records\", [])\n            if isinstance(records, list):\n                self.records = [r for r in records if isinstance(r, dict)]\n            status = data.get(\"status\", {})\n            if isinstance(status, dict):\n                for step in self._STEPS:\n                    self.status[step] = \"completed\" if status.get(step) == \"completed\" else \"pending\"\n\n    def save(self):\n        data = {\n            \"status\": self.status,\n            \"records\": self.records,\n        }\n        tmp_path = self.filepath + \".tmp\"\n        with open(tmp_path, \"w\", encoding=\"utf-8\") as f:\n            json.dump(data, f, ensure_ascii=False)\n        os.replace(tmp_path, self.filepath)\n\n    def add_record(self, instance_id, step):\n        self.records.append({\n            \"sequence\": len(self.records) + 1,\n            \"instance_id\": instance_id,\n            \"step\": step,\n        })\n        self.status[step] = \"completed\"\n        self.save()"
+      },
+      "private_fault_requirements": "Primary fault: workflow.py Workflow.execute ignores persisted status and unconditionally executes all steps from prepare forward for every run/resume action, appending a record and saving completed status for each step. It never checks store.status or skips completed steps, and the action parameter is unused. This causes already completed prepare and transform steps to be executed again on resume, producing duplicate records. Preserve all correct behaviors except this missing skip: persistence, fresh-store reload between actions, record numbering, status updates, output structure, input normalization, and per-instance file isolation. The faulty implementation must return valid JSON and must not crash for valid input. For the symptomatic action sequence run stop_after prepare, resume stop_after transform, resume to completion, the faulty output must contain six records and duplicate_counts prepare=2, transform=1, generate=0.",
+      "symptom_paths": [
+        [
+          "duplicate_counts",
+          "prepare"
+        ],
+        [
+          "duplicate_counts",
+          "transform"
+        ],
+        [
+          "records"
+        ]
+      ]
+    },
+    "evaluation": {
+      "cases": [
+        {
+          "id": "run_full_initial",
+          "group": "regression",
+          "visibility": "public",
+          "covers": [
+            "run",
+            "persist"
+          ],
+          "input": {
+            "instance_id": "wf-run-full",
+            "actions": [
+              {
+                "action": "run"
+              }
+            ]
+          },
+          "expected": {
+            "records": [
+              {
+                "sequence": 1,
+                "instance_id": "wf-run-full",
+                "step": "prepare"
+              },
+              {
+                "sequence": 2,
+                "instance_id": "wf-run-full",
+                "step": "transform"
+              },
+              {
+                "sequence": 3,
+                "instance_id": "wf-run-full",
+                "step": "generate"
+              }
+            ],
+            "status": {
+              "prepare": "completed",
+              "transform": "completed",
+              "generate": "completed"
+            },
+            "duplicate_counts": {
+              "prepare": 0,
+              "transform": 0,
+              "generate": 0
+            }
+          },
+          "faulty_expected": null,
+          "classification_reason": "An initial full run has no previously completed steps, so it cannot trigger the duplicate re-execution fault; it verifies baseline run and persist behavior."
+        },
+        {
+          "id": "resume_after_prepare",
+          "group": "target",
+          "visibility": "public",
+          "covers": [
+            "resume",
+            "persist",
+            "close_reopen"
+          ],
+          "input": {
+            "instance_id": "wf-resume-prepare",
+            "actions": [
+              {
+                "action": "run",
+                "stop_after": "prepare"
+              },
+              {
+                "action": "resume"
+              }
+            ]
+          },
+          "expected": {
+            "records": [
+              {
+                "sequence": 1,
+                "instance_id": "wf-resume-prepare",
+                "step": "prepare"
+              },
+              {
+                "sequence": 2,
+                "instance_id": "wf-resume-prepare",
+                "step": "transform"
+              },
+              {
+                "sequence": 3,
+                "instance_id": "wf-resume-prepare",
+                "step": "generate"
+              }
+            ],
+            "status": {
+              "prepare": "completed",
+              "transform": "completed",
+              "generate": "completed"
+            },
+            "duplicate_counts": {
+              "prepare": 0,
+              "transform": 0,
+              "generate": 0
+            }
+          },
+          "faulty_expected": null,
+          "classification_reason": "Resume follows a persisted prepare completion; a faulty implementation re-executes prepare, raising duplicate_counts.prepare or appending a repeated prepare record."
+        },
+        {
+          "id": "resume_empty_store",
+          "group": "regression",
+          "visibility": "hidden",
+          "covers": [
+            "resume",
+            "persist"
+          ],
+          "input": {
+            "instance_id": "wf-resume-empty",
+            "actions": [
+              {
+                "action": "resume"
+              }
+            ]
+          },
+          "expected": {
+            "records": [
+              {
+                "sequence": 1,
+                "instance_id": "wf-resume-empty",
+                "step": "prepare"
+              },
+              {
+                "sequence": 2,
+                "instance_id": "wf-resume-empty",
+                "step": "transform"
+              },
+              {
+                "sequence": 3,
+                "instance_id": "wf-resume-empty",
+                "step": "generate"
+              }
+            ],
+            "status": {
+              "prepare": "completed",
+              "transform": "completed",
+              "generate": "completed"
+            },
+            "duplicate_counts": {
+              "prepare": 0,
+              "transform": 0,
+              "generate": 0
+            }
+          },
+          "faulty_expected": null,
+          "classification_reason": "Resume from an empty store has no completed step to duplicate, so it only verifies that resume starts pending work from prepare."
+        },
+        {
+          "id": "run_after_transform_as_resume",
+          "group": "target",
+          "visibility": "hidden",
+          "covers": [
+            "run",
+            "resume",
+            "persist",
+            "close_reopen"
+          ],
+          "input": {
+            "instance_id": "wf-run-after-transform",
+            "actions": [
+              {
+                "action": "run",
+                "stop_after": "transform"
+              },
+              {
+                "action": "run"
+              }
+            ]
+          },
+          "expected": {
+            "records": [
+              {
+                "sequence": 1,
+                "instance_id": "wf-run-after-transform",
+                "step": "prepare"
+              },
+              {
+                "sequence": 2,
+                "instance_id": "wf-run-after-transform",
+                "step": "transform"
+              },
+              {
+                "sequence": 3,
+                "instance_id": "wf-run-after-transform",
+                "step": "generate"
+              }
+            ],
+            "status": {
+              "prepare": "completed",
+              "transform": "completed",
+              "generate": "completed"
+            },
+            "duplicate_counts": {
+              "prepare": 0,
+              "transform": 0,
+              "generate": 0
+            }
+          },
+          "faulty_expected": null,
+          "classification_reason": "The second run must act as resume because completed state already exists; otherwise completed prepare or transform is re-executed and duplicate counts rise."
+        },
+        {
+          "id": "stop_after_skipped_completed",
+          "group": "target",
+          "visibility": "hidden",
+          "covers": [
+            "resume",
+            "persist",
+            "close_reopen"
+          ],
+          "input": {
+            "instance_id": "wf-stop-skip",
+            "actions": [
+              {
+                "action": "run",
+                "stop_after": "transform"
+              },
+              {
+                "action": "resume",
+                "stop_after": "prepare"
+              }
+            ]
+          },
+          "expected": {
+            "records": [
+              {
+                "sequence": 1,
+                "instance_id": "wf-stop-skip",
+                "step": "prepare"
+              },
+              {
+                "sequence": 2,
+                "instance_id": "wf-stop-skip",
+                "step": "transform"
+              },
+              {
+                "sequence": 3,
+                "instance_id": "wf-stop-skip",
+                "step": "generate"
+              }
+            ],
+            "status": {
+              "prepare": "completed",
+              "transform": "completed",
+              "generate": "completed"
+            },
+            "duplicate_counts": {
+              "prepare": 0,
+              "transform": 0,
+              "generate": 0
+            }
+          },
+          "faulty_expected": null,
+          "classification_reason": "The resume action has stop_after=prepare after prepare is already completed and should be skipped; re-executing prepare would satisfy the stop condition and leave generate pending, exposing the fault."
+        }
+      ],
+      "evasion_checks": [
+        "Each action must read the same persisted file, so resumed completed steps must not append records or increment duplicate_counts.",
+        "stop_after must be evaluated only after a pending step is executed; an already completed matching step must be skipped without stopping.",
+        "run on an instance with existing records must behave exactly like resume and preserve all persisted records.",
+        "sequence is a one-based global append order and must not reset after a resume or run-as-resume action."
+      ]
+    },
+    "reference": {
+      "app.py": "import hashlib\nimport os\nimport tempfile\n\nfrom storage import PersistentStore\nfrom workflow import Workflow\n\n_STEPS = (\"prepare\", \"transform\", \"generate\")\n\n\ndef _file_path(instance_id):\n    digest = hashlib.sha256((\"batch-workflow:\" + instance_id).encode(\"utf-8\")).hexdigest()[:24]\n    return os.path.join(tempfile.gettempdir(), \"batch_wf_\" + digest + \".json\")\n\n\ndef _normalise_actions(raw_actions):\n    actions = []\n    if not isinstance(raw_actions, list):\n        return actions\n    for raw in raw_actions:\n        if not isinstance(raw, dict):\n            continue\n        action = raw.get(\"action\", \"resume\")\n        if action not in (\"run\", \"resume\"):\n            action = \"resume\"\n        stop_after = raw.get(\"stop_after\", \"none\")\n        if stop_after not in (\"none\", \"prepare\", \"transform\"):\n            stop_after = \"none\"\n        actions.append({\"action\": action, \"stop_after\": stop_after})\n    return actions\n\n\ndef scenario(data):\n    data = data if isinstance(data, dict) else {}\n    instance_id = str(data.get(\"instance_id\", \"default\"))\n    file_path = _file_path(instance_id)\n    actions = _normalise_actions(data.get(\"actions\"))\n\n    for action in actions:\n        store = PersistentStore(file_path)\n        workflow = Workflow(store, instance_id)\n        workflow.execute(action[\"action\"], action[\"stop_after\"])\n\n    store = PersistentStore(file_path)\n    counts = {}\n    for record in store.records:\n        step = record.get(\"step\")\n        if step in _STEPS:\n            counts[step] = counts.get(step, 0) + 1\n\n    duplicate_counts = {\n        step: max(0, counts.get(step, 0) - 1)\n        for step in _STEPS\n    }\n    status = {\n        step: store.status.get(step, \"pending\")\n        for step in _STEPS\n    }\n\n    return {\n        \"records\": store.records,\n        \"status\": status,\n        \"duplicate_counts\": duplicate_counts,\n    }",
+      "workflow.py": "class Workflow:\n    STEPS = (\"prepare\", \"transform\", \"generate\")\n\n    def __init__(self, store, instance_id):\n        self.store = store\n        self.instance_id = instance_id\n\n    def execute(self, action, stop_after):\n        for step in self.STEPS:\n            if self.store.status.get(step) == \"completed\":\n                continue\n            self.store.add_record(self.instance_id, step)\n            if stop_after == step:\n                break",
+      "storage.py": "import json\nimport os\n\n\nclass PersistentStore:\n    _STEPS = (\"prepare\", \"transform\", \"generate\")\n\n    def __init__(self, filepath):\n        self.filepath = filepath\n        self.records = []\n        self.status = {\"prepare\": \"pending\", \"transform\": \"pending\", \"generate\": \"pending\"}\n        self.load()\n\n    def load(self):\n        data = None\n        try:\n            with open(self.filepath, \"r\", encoding=\"utf-8\") as f:\n                data = json.load(f)\n        except (OSError, ValueError):\n            data = None\n\n        if isinstance(data, dict):\n            records = data.get(\"records\", [])\n            if isinstance(records, list):\n                self.records = [r for r in records if isinstance(r, dict)]\n            status = data.get(\"status\", {})\n            if isinstance(status, dict):\n                for step in self._STEPS:\n                    self.status[step] = \"completed\" if status.get(step) == \"completed\" else \"pending\"\n\n    def save(self):\n        data = {\n            \"status\": self.status,\n            \"records\": self.records,\n        }\n        tmp_path = self.filepath + \".tmp\"\n        with open(tmp_path, \"w\", encoding=\"utf-8\") as f:\n            json.dump(data, f, ensure_ascii=False)\n        os.replace(tmp_path, self.filepath)\n\n    def add_record(self, instance_id, step):\n        self.records.append({\n            \"sequence\": len(self.records) + 1,\n            \"instance_id\": instance_id,\n            \"step\": step,\n        })\n        self.status[step] = \"completed\"\n        self.save()"
+    },
+    "evasions": {
+      "late_stop_missing": {
+        "app.py": "import hashlib\nimport os\nimport tempfile\n\nfrom storage import PersistentStore\nfrom workflow import Workflow\n\n_STEPS = (\"prepare\", \"transform\", \"generate\")\n\n\ndef _file_path(instance_id):\n    digest = hashlib.sha256((\"batch-workflow:\" + instance_id).encode(\"utf-8\")).hexdigest()[:24]\n    return os.path.join(tempfile.gettempdir(), \"batch_wf_\" + digest + \".json\")\n\n\ndef _normalise_actions(raw_actions):\n    actions = []\n    if not isinstance(raw_actions, list):\n        return actions\n    for raw in raw_actions:\n        if not isinstance(raw, dict):\n            continue\n        action = raw.get(\"action\", \"resume\")\n        if action not in (\"run\", \"resume\"):\n            action = \"resume\"\n        stop_after = raw.get(\"stop_after\", \"none\")\n        if stop_after not in (\"none\", \"prepare\", \"transform\"):\n            stop_after = \"none\"\n        actions.append({\"action\": action, \"stop_after\": stop_after})\n    return actions\n\n\ndef scenario(data):\n    data = data if isinstance(data, dict) else {}\n    instance_id = str(data.get(\"instance_id\", \"default\"))\n    file_path = _file_path(instance_id)\n    actions = _normalise_actions(data.get(\"actions\"))\n\n    for action in actions:\n        store = PersistentStore(file_path)\n        workflow = Workflow(store, instance_id)\n        workflow.execute(action[\"action\"], action[\"stop_after\"])\n\n    store = PersistentStore(file_path)\n    counts = {}\n    for record in store.records:\n        step = record.get(\"step\")\n        if step in _STEPS:\n            counts[step] = counts.get(step, 0) + 1\n\n    duplicate_counts = {\n        step: max(0, counts.get(step, 0) - 1)\n        for step in _STEPS\n    }\n    status = {\n        step: store.status.get(step, \"pending\")\n        for step in _STEPS\n    }\n\n    return {\n        \"records\": store.records,\n        \"status\": status,\n        \"duplicate_counts\": duplicate_counts,\n    }",
+        "workflow.py": "class Workflow:\n    STEPS = (\"prepare\", \"transform\", \"generate\")\n\n    def __init__(self, store, instance_id):\n        self.store = store\n        self.instance_id = instance_id\n\n    def execute(self, action, stop_after):\n        for step in self.STEPS:\n            if self.store.status.get(step) == \"completed\":\n                continue\n            self.store.add_record(self.instance_id, step)",
+        "storage.py": "import json\nimport os\n\n\nclass PersistentStore:\n    _STEPS = (\"prepare\", \"transform\", \"generate\")\n\n    def __init__(self, filepath):\n        self.filepath = filepath\n        self.records = []\n        self.status = {\"prepare\": \"pending\", \"transform\": \"pending\", \"generate\": \"pending\"}\n        self.load()\n\n    def load(self):\n        data = None\n        try:\n            with open(self.filepath, \"r\", encoding=\"utf-8\") as f:\n                data = json.load(f)\n        except (OSError, ValueError):\n            data = None\n\n        if isinstance(data, dict):\n            records = data.get(\"records\", [])\n            if isinstance(records, list):\n                self.records = [r for r in records if isinstance(r, dict)]\n            status = data.get(\"status\", {})\n            if isinstance(status, dict):\n                for step in self._STEPS:\n                    self.status[step] = \"completed\" if status.get(step) == \"completed\" else \"pending\"\n\n    def save(self):\n        data = {\n            \"status\": self.status,\n            \"records\": self.records,\n        }\n        tmp_path = self.filepath + \".tmp\"\n        with open(tmp_path, \"w\", encoding=\"utf-8\") as f:\n            json.dump(data, f, ensure_ascii=False)\n        os.replace(tmp_path, self.filepath)\n\n    def add_record(self, instance_id, step):\n        self.records.append({\n            \"sequence\": len(self.records) + 1,\n            \"instance_id\": instance_id,\n            \"step\": step,\n        })\n        self.status[step] = \"completed\"\n        self.save()"
+      },
+      "run_resets_status": {
+        "app.py": "import hashlib\nimport os\nimport tempfile\n\nfrom storage import PersistentStore\nfrom workflow import Workflow\n\n_STEPS = (\"prepare\", \"transform\", \"generate\")\n\n\ndef _file_path(instance_id):\n    digest = hashlib.sha256((\"batch-workflow:\" + instance_id).encode(\"utf-8\")).hexdigest()[:24]\n    return os.path.join(tempfile.gettempdir(), \"batch_wf_\" + digest + \".json\")\n\n\ndef _normalise_actions(raw_actions):\n    actions = []\n    if not isinstance(raw_actions, list):\n        return actions\n    for raw in raw_actions:\n        if not isinstance(raw, dict):\n            continue\n        action = raw.get(\"action\", \"resume\")\n        if action not in (\"run\", \"resume\"):\n            action = \"resume\"\n        stop_after = raw.get(\"stop_after\", \"none\")\n        if stop_after not in (\"none\", \"prepare\", \"transform\"):\n            stop_after = \"none\"\n        actions.append({\"action\": action, \"stop_after\": stop_after})\n    return actions\n\n\ndef scenario(data):\n    data = data if isinstance(data, dict) else {}\n    instance_id = str(data.get(\"instance_id\", \"default\"))\n    file_path = _file_path(instance_id)\n    actions = _normalise_actions(data.get(\"actions\"))\n\n    for action in actions:\n        store = PersistentStore(file_path)\n        workflow = Workflow(store, instance_id)\n        workflow.execute(action[\"action\"], action[\"stop_after\"])\n\n    store = PersistentStore(file_path)\n    counts = {}\n    for record in store.records:\n        step = record.get(\"step\")\n        if step in _STEPS:\n            counts[step] = counts.get(step, 0) + 1\n\n    duplicate_counts = {\n        step: max(0, counts.get(step, 0) - 1)\n        for step in _STEPS\n    }\n    status = {\n        step: store.status.get(step, \"pending\")\n        for step in _STEPS\n    }\n\n    return {\n        \"records\": store.records,\n        \"status\": status,\n        \"duplicate_counts\": duplicate_counts,\n    }",
+        "workflow.py": "class Workflow:\n    STEPS = (\"prepare\", \"transform\", \"generate\")\n\n    def __init__(self, store, instance_id):\n        self.store = store\n        self.instance_id = instance_id\n\n    def execute(self, action, stop_after):\n        if action == \"run\":\n            for step in self.STEPS:\n                self.store.status[step] = \"pending\"\n        for step in self.STEPS:\n            if self.store.status.get(step) == \"completed\":\n                continue\n            self.store.add_record(self.instance_id, step)\n            if stop_after == step:\n                break",
+        "storage.py": "import json\nimport os\n\n\nclass PersistentStore:\n    _STEPS = (\"prepare\", \"transform\", \"generate\")\n\n    def __init__(self, filepath):\n        self.filepath = filepath\n        self.records = []\n        self.status = {\"prepare\": \"pending\", \"transform\": \"pending\", \"generate\": \"pending\"}\n        self.load()\n\n    def load(self):\n        data = None\n        try:\n            with open(self.filepath, \"r\", encoding=\"utf-8\") as f:\n                data = json.load(f)\n        except (OSError, ValueError):\n            data = None\n\n        if isinstance(data, dict):\n            records = data.get(\"records\", [])\n            if isinstance(records, list):\n                self.records = [r for r in records if isinstance(r, dict)]\n            status = data.get(\"status\", {})\n            if isinstance(status, dict):\n                for step in self._STEPS:\n                    self.status[step] = \"completed\" if status.get(step) == \"completed\" else \"pending\"\n\n    def save(self):\n        data = {\n            \"status\": self.status,\n            \"records\": self.records,\n        }\n        tmp_path = self.filepath + \".tmp\"\n        with open(tmp_path, \"w\", encoding=\"utf-8\") as f:\n            json.dump(data, f, ensure_ascii=False)\n        os.replace(tmp_path, self.filepath)\n\n    def add_record(self, instance_id, step):\n        self.records.append({\n            \"sequence\": len(self.records) + 1,\n            \"instance_id\": instance_id,\n            \"step\": step,\n        })\n        self.status[step] = \"completed\"\n        self.save()"
+      }
+    },
+    "build_sha256": "538d7546a6167527bc5bbf6da02f3dcb55eecfdfff3a445cf62e05d35a910df8",
+    "evaluation_sha256": "21d46e4858af5929a838d60aa83da480955bdaa8b643817bf138f88eab4ce2f3"
+  }
+]

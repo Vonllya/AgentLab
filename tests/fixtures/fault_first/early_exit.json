@@ -1,0 +1,359 @@
+{
+  "source_job": "dc3f94794576418396aca9afe6180842",
+  "request": {
+    "requirement": "Agent启动时后端首次探测未就绪，但在允许重试窗口内随后就绪；正常行为应继续探测并注册全部工具，预设故障是首次未就绪就提前结束导致空工具注册。始终未就绪时应正常降级并保留诊断；仅使用Python标准库的确定性本地模拟，不访问外部服务。",
+    "minutes": 20,
+    "difficulty": "",
+    "preference": ""
+  },
+  "assets": {
+    "project_build": {
+      "assessment": "generatable",
+      "rationale": "需求明确：在确定性本地模拟中，Agent 启动后应在允许的重试窗口内持续探测后端就绪状态，就绪后注册全部工具；始终未就绪时降级并保留诊断。预设故障为首次探测未就绪即提前结束，导致随后就绪时仍返回空工具注册。仅需修改授权规范字段 /simulation，补充 attempts 取值规则，故障源码与私有设计保持不变。",
+      "questions": [],
+      "contract": {
+        "title": "后端就绪探测与工具注册模拟",
+        "scenario": "在一个独立的确定性本地模拟中，Agent 启动后需要探测后端就绪状态，并在允许的重试窗口内继续探测；后端可能在首次探测时未就绪、随后就绪。就绪后应注册全部工具并返回注册结果；若在重试窗口内始终未就绪，应正常降级并保留诊断信息。输入为不可信数据，仅用于驱动本地模拟，不读取配置、秘密或执行任意命令。",
+        "symptom": "当后端首次探测未就绪但随后就绪时，输出显示探测提前结束，注册工具列表为空，且没有继续重试到就绪状态。",
+        "capabilities": [
+          "按输入驱动本地后端就绪探测",
+          "在允许的重试窗口内继续探测",
+          "就绪后注册全部工具",
+          "始终未就绪时降级并保留诊断"
+        ],
+        "minutes": 20,
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "backend_ready_after_attempts": {
+              "type": "integer",
+              "description": "后端在第几次探测后变为就绪；0 表示首次探测即就绪，大于重试窗口表示始终未就绪"
+            },
+            "max_attempts": {
+              "type": "integer",
+              "description": "允许的最大探测次数，包含首次探测"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "后端就绪后应注册的工具名称列表"
+            }
+          },
+          "required": [
+            "backend_ready_after_attempts",
+            "max_attempts",
+            "tools"
+          ],
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "registered",
+                "degraded"
+              ]
+            },
+            "attempts": {
+              "type": "integer"
+            },
+            "registered_tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "diagnostics": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "status",
+            "attempts",
+            "registered_tools",
+            "diagnostics"
+          ],
+          "additionalProperties": false
+        },
+        "behaviors": {
+          "probe_until_ready": "在允许的重试窗口内持续探测，直到后端就绪或达到最大探测次数。",
+          "register_all_tools": "后端就绪后注册输入中给出的全部工具，并返回注册列表。",
+          "degrade_with_diagnostics": "在重试窗口内始终未就绪时返回降级状态并保留诊断信息。",
+          "deterministic_local": "仅使用标准库进行确定性本地模拟，不访问外部服务。"
+        },
+        "constraints": [
+          "仅使用 Python 标准库，不访问网络或外部服务。",
+          "每次 scenario 独立运行，不依赖跨调用状态。",
+          "输入视为不可信数据，不读取配置、秘密或执行任意命令。",
+          "输出必须为 JSON 兼容值。",
+          "探测与注册逻辑必须在一次 scenario 内完成。"
+        ],
+        "input_domain": "backend_ready_after_attempts 为整数，0 表示首次探测即就绪，正整数表示第 N 次探测后就绪，大于 max_attempts 表示始终未就绪；max_attempts 为整数且至少为 1；tools 为字符串数组，可为空数组。",
+        "exclusions": [
+          "不访问真实后端或网络。",
+          "不读取环境变量、配置文件或秘密。",
+          "不执行任意命令或动态代码。",
+          "不处理并发、超时或异步调度。"
+        ],
+        "files": [
+          "app.py",
+          "probe.py",
+          "registry.py"
+        ],
+        "simulation": "scenario(data) 读取 backend_ready_after_attempts、max_attempts 和 tools，按顺序模拟探测：第 1 次探测对应 attempt=1。若 backend_ready_after_attempts 为 0，则首次探测即就绪，返回 registered，attempts 等于 1，registered_tools 等于 tools，diagnostics 为空。若 backend_ready_after_attempts 在 1..max_attempts 范围内，则在对应次数后返回 registered，attempts 等于 backend_ready_after_attempts，registered_tools 等于 tools，diagnostics 为空。若 backend_ready_after_attempts 大于 max_attempts，则返回 degraded，attempts 等于 max_attempts，registered_tools 为空，diagnostics 包含未就绪说明。所有逻辑在单次调用内完成。"
+      },
+      "faulty": {
+        "app.py": "from probe import probe_backend\nfrom registry import register_tools\n\ndef scenario(data):\n    ready_after = data.get('backend_ready_after_attempts', 0)\n    max_attempts = data.get('max_attempts', 1)\n    tools = data.get('tools', [])\n    ready = probe_backend(ready_after, 1)\n    if not ready:\n        return {\n            'status': 'degraded',\n            'attempts': 1,\n            'registered_tools': [],\n            'diagnostics': ['backend not ready on first probe']\n        }\n    return {\n        'status': 'registered',\n        'attempts': 1,\n        'registered_tools': register_tools(tools),\n        'diagnostics': []\n    }",
+        "probe.py": "def probe_backend(ready_after, attempt):\n    return ready_after == 0 or attempt >= ready_after",
+        "registry.py": "def register_tools(tools):\n    return list(tools)"
+      },
+      "private_fault_requirements": "主要故障：首次探测未就绪时提前结束，不继续在允许的重试窗口内探测，导致后端随后就绪时仍返回 degraded 且 registered_tools 为空。必须保留的场景：当 backend_ready_after_attempts 大于 max_attempts（始终未就绪）时，仍应正常降级并保留诊断信息；当首次探测即就绪时，应正常注册全部工具。故障项目所有文件可运行，仅存在该主要故障，不以异常、超时或语法错误作为症状。",
+      "symptom_paths": [
+        [
+          "status"
+        ],
+        [
+          "registered_tools"
+        ],
+        [
+          "attempts"
+        ]
+      ]
+    },
+    "evaluation": {
+      "cases": [
+        {
+          "id": "public_target_ready_after_retry",
+          "group": "target",
+          "visibility": "public",
+          "covers": [
+            "probe_until_ready",
+            "register_all_tools"
+          ],
+          "input": {
+            "backend_ready_after_attempts": 3,
+            "max_attempts": 5,
+            "tools": [
+              "search",
+              "calc",
+              "fetch"
+            ]
+          },
+          "expected": {
+            "status": "registered",
+            "attempts": 3,
+            "registered_tools": [
+              "search",
+              "calc",
+              "fetch"
+            ],
+            "diagnostics": []
+          },
+          "faulty_expected": null,
+          "classification_reason": "主要故障场景：首次探测未就绪但随后就绪，必须继续重试到第3次并注册全部工具，直接针对探测提前结束与注册列表为空的故障。"
+        },
+        {
+          "id": "public_target_ready_first_attempt",
+          "group": "target",
+          "visibility": "public",
+          "covers": [
+            "probe_until_ready",
+            "register_all_tools"
+          ],
+          "input": {
+            "backend_ready_after_attempts": 0,
+            "max_attempts": 4,
+            "tools": [
+              "alpha",
+              "beta"
+            ]
+          },
+          "expected": {
+            "status": "registered",
+            "attempts": 1,
+            "registered_tools": [
+              "alpha",
+              "beta"
+            ],
+            "diagnostics": []
+          },
+          "faulty_expected": null,
+          "classification_reason": "目标行为：0 表示首次探测即就绪，attempts 必须为 1 且注册全部工具，验证探测起点与注册路径。"
+        },
+        {
+          "id": "public_regression_degrade_never_ready",
+          "group": "regression",
+          "visibility": "public",
+          "covers": [
+            "degrade_with_diagnostics"
+          ],
+          "input": {
+            "backend_ready_after_attempts": 9,
+            "max_attempts": 3,
+            "tools": [
+              "x"
+            ]
+          },
+          "expected": {
+            "status": "degraded",
+            "attempts": 3,
+            "registered_tools": [],
+            "diagnostics": [
+              "backend not ready within max_attempts"
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "保留行为：始终未就绪时降级并保留诊断，不触发主要故障（主要故障是就绪后提前结束），用于确认降级分支未被破坏。"
+        },
+        {
+          "id": "hidden_target_ready_at_window_edge",
+          "group": "target",
+          "visibility": "hidden",
+          "covers": [
+            "probe_until_ready",
+            "register_all_tools"
+          ],
+          "input": {
+            "backend_ready_after_attempts": 5,
+            "max_attempts": 5,
+            "tools": [
+              "t1",
+              "t2",
+              "t3",
+              "t4"
+            ]
+          },
+          "expected": {
+            "status": "registered",
+            "attempts": 5,
+            "registered_tools": [
+              "t1",
+              "t2",
+              "t3",
+              "t4"
+            ],
+            "diagnostics": []
+          },
+          "faulty_expected": null,
+          "classification_reason": "目标行为：在重试窗口最后一次探测才就绪，必须重试到边界并注册全部工具，针对提前结束故障。"
+        },
+        {
+          "id": "hidden_regression_empty_tools_ready",
+          "group": "regression",
+          "visibility": "hidden",
+          "covers": [
+            "register_all_tools",
+            "deterministic_local"
+          ],
+          "input": {
+            "backend_ready_after_attempts": 1,
+            "max_attempts": 2,
+            "tools": []
+          },
+          "expected": {
+            "status": "registered",
+            "attempts": 1,
+            "registered_tools": [],
+            "diagnostics": []
+          },
+          "faulty_expected": null,
+          "classification_reason": "保留行为：tools 为空数组且首次探测就绪时，注册列表为空但状态为 registered，验证空工具列表不触发主要故障。"
+        },
+        {
+          "id": "hidden_regression_degrade_diagnostics_present",
+          "group": "regression",
+          "visibility": "hidden",
+          "covers": [
+            "degrade_with_diagnostics",
+            "deterministic_local"
+          ],
+          "input": {
+            "backend_ready_after_attempts": 100,
+            "max_attempts": 1,
+            "tools": [
+              "only"
+            ]
+          },
+          "expected": {
+            "status": "degraded",
+            "attempts": 1,
+            "registered_tools": [],
+            "diagnostics": [
+              "backend not ready within max_attempts"
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "保留行为：max_attempts 为 1 且始终未就绪时降级并保留诊断，确认最小窗口下不触发主要故障。"
+        }
+      ],
+      "evasion_checks": [
+        "检查实现是否在 backend_ready_after_attempts 大于 max_attempts 时错误返回 registered 或非空 registered_tools。",
+        "检查实现是否将 backend_ready_after_attempts 为 0 时 attempts 错误设为 0 而非 1。",
+        "检查实现是否在就绪分支遗漏部分 tools 或改变工具顺序。",
+        "检查实现是否在降级分支返回空 diagnostics 或非空 registered_tools。",
+        "检查实现是否依赖跨调用状态或访问网络/外部服务而非确定性本地模拟。"
+      ]
+    },
+    "fingerprint": {
+      "checks": [
+        {
+          "case_id": "public_target_ready_after_retry",
+          "design_quote": "主要故障：首次探测未就绪时提前结束，不继续在允许的重试窗口内探测，导致后端随后就绪时仍返回 degraded 且 registered_tools 为空。必须保留的场景：当 backend_ready_after_attempts 大于 max_attempts（始终未就绪）时，仍应正常降级并保留诊断信息；当首次探测即就绪时，应正常注册全部工具。故障项目所有文件可运行，仅存在该主要故障，不以异常、超时或语法错误作为症状。",
+          "reason": "后端第3次探测才就绪且在max_attempts=5窗口内，正常应继续重试到第3次并注册；若首次未就绪即提前结束，则status为degraded、attempts停在1、registered_tools为空，与正确期望不同。",
+          "assertions": [
+            {
+              "path": [
+                "status"
+              ],
+              "equals": "degraded"
+            },
+            {
+              "path": [
+                "attempts"
+              ],
+              "equals": 1
+            },
+            {
+              "path": [
+                "registered_tools"
+              ],
+              "equals": []
+            }
+          ]
+        },
+        {
+          "case_id": "hidden_target_ready_at_window_edge",
+          "design_quote": "主要故障：首次探测未就绪时提前结束，不继续在允许的重试窗口内探测，导致后端随后就绪时仍返回 degraded 且 registered_tools 为空。必须保留的场景：当 backend_ready_after_attempts 大于 max_attempts（始终未就绪）时，仍应正常降级并保留诊断信息；当首次探测即就绪时，应正常注册全部工具。故障项目所有文件可运行，仅存在该主要故障，不以异常、超时或语法错误作为症状。",
+          "reason": "后端在窗口最后一次探测（第5次）才就绪，正常应重试到边界并注册全部工具；提前结束故障会返回degraded、attempts=1且注册列表为空，与正确期望不同。",
+          "assertions": [
+            {
+              "path": [
+                "status"
+              ],
+              "equals": "degraded"
+            },
+            {
+              "path": [
+                "attempts"
+              ],
+              "equals": 1
+            },
+            {
+              "path": [
+                "registered_tools"
+              ],
+              "equals": []
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

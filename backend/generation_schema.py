@@ -5,6 +5,9 @@ import re
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+CASE_ID_MAX_LENGTH = 96
+CASE_ID_PATTERN = rf'^[a-z][a-z0-9_-]{{0,{CASE_ID_MAX_LENGTH - 1}}}$'
+
 PROTOCOL='agentlab-generated-json-v1'
 ENVIRONMENT='Python 3.10.16 标准库；平台固定 Docker；无网络，8秒/检查，128MiB'
 ENTRY='from app import scenario\n'
@@ -65,7 +68,7 @@ class Project(Strict):
     evasion_explanations:dict[str,str]
 
 class Case(Strict):
-    id:str=Field(pattern='^[a-z][a-z0-9_-]{0,45}$')
+    id:str=Field(pattern=CASE_ID_PATTERN, description='简短测试标识，最多96字符；详细场景说明放在说明字段，不截断ID。')
     group:Literal['regression','target']
     visibility:Literal['public','hidden']
     covers:list[str]=Field(min_length=1,max_length=10)

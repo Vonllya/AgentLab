@@ -10,19 +10,22 @@ import time
 from pathlib import Path
 from . import storage as s, agent, executor
 from .generation_schema import *
-from . import generation_protocol as protocol, generation_direct as direct
+from . import generation_protocol as protocol, generation_direct as direct, generation_fault_first as ff
 
 ACTIVE_STATES={'gathering_evidence','probing_evidence','reviewing_spec','analyzing','building','evaluating','validating','teaching','diagnosing','repairing_build','waiting_backoff','clarifying_contract','checking_contract'}
 MAX_REQUESTS=10
 MAX_ATTEMPTS=3  # initial + at most two repairs per stage
 SCHEMAS={'design':Design,'build':Project,'evaluation':Evaluation,'teaching':Teaching}
 STATES={'project_build':'building','spec_review':'reviewing_spec','design':'analyzing','build':'building','evaluation':'evaluating','validation':'validating','teaching':'teaching','diagnosis':'diagnosing','repair_build':'repairing_build','review':'teaching','contract_review':'clarifying_contract','contract_check':'checking_contract','contract_apply':'checking_contract'}
+STATES.update(ff.STAGES)
 ACTIVE=set()
 POOL=threading.BoundedSemaphore(1)
 
 
 def digest(value):return hashlib.sha256(json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-def review_keys(job):return (('build','evaluation','teaching','fingerprint') if protocol.enabled(job) else ('build','evaluation','teaching')) + (('project_build','spec_review') if direct.enabled(job) else ())
+def review_keys(job):
+    if ff.enabled(job):return tuple(job['assets'])
+    return (('build','evaluation','teaching','fingerprint') if protocol.enabled(job) else ('build','evaluation','teaching')) + (('project_build','spec_review') if direct.enabled(job) else ())
 def root(job):return s.DATA/'generation'/job['id']
 def put(job):
     with s.LOCK:
@@ -56,6 +59,16 @@ def public(job):
     result['progress_history']=job.get('progress_history',[])
     result['diagnostic_strategy']=job.get('diagnostic_strategy')
     result['project_flow']=job.get('project_flow')
+    result['fault_first_version']=job.get('fault_first_version')
+    result['fault_impact_version']=job.get('fault_impact_version')
+    result['lean_version']=job.get('lean_version')
+    result['lean_coverage_reviews']=job.get('lean_coverage_reviews',[])
+    result['demand_coverage_version']=job.get('demand_coverage_version')
+    result['inventory_correction_version']=job.get('inventory_correction_version')
+    result['safeguards_version']=job.get('safeguards_version')
+    result['executable_corrections_version']=job.get('executable_corrections_version')
+    result['demand_reviews']=job.get('demand_reviews',[])
+    result['fault_first_progress']={'fault_accepted':bool(job.get('fault_freeze')),'fix_accepted':bool(job.get('fix_acceptance',{}).get('passed'))} if ff.enabled(job) else None
     result['role_policy']=job.get('role_policy')
     result['handoff_version']=job.get('handoff_version')
     result['spec_reviews']=job.get('spec_reviews',[])
@@ -77,7 +90,7 @@ def public(job):
     return result
 
 
-def create(request,policy=True,direct_build=False,handoff=False,fault_model=False):
+def create(request,policy=True,direct_build=False,handoff=False,fault_model=False,fault_first=False,demand_coverage=False,safeguards=False,executable_corrections=False,recovery_policy=False,lean=False):
     job={'id':s.ident(),'request':request.model_dump(),'created':time.time(),'mode':agent.mode(),'status':'draft','stage':'design','contract_version':0,'confirmed_version':None,'assets':{},'attempts':[],'request_count':0,'error':None,'matrix':None}
     if policy:
         from .generation_budget import initialize,POLICY
@@ -92,6 +105,44 @@ def create(request,policy=True,direct_build=False,handoff=False,fault_model=Fals
         if not (policy and direct_build and handoff):raise ValueError('故障模型需要完整的有界直接构建流程')
         from .generation_fault_model import VERSION
         job['fault_model_version']=VERSION
+    if fault_first:
+        if not (policy and direct_build) or handoff or fault_model:raise ValueError('故障优先需要有界直接构建；不混用旧故障模型或工单流程')
+        job['fault_first_version']=ff.VERSION
+        from .generation_fault_obligations import VERSION as IMPACT_VERSION
+        job['fault_impact_version']=IMPACT_VERSION
+    if lean:
+        if not fault_first or any((demand_coverage,safeguards,executable_corrections,recovery_policy)):
+            raise ValueError('精简流程须独立启用，不混用清单协议')
+        from .generation_lean import VERSION as LEAN_VERSION
+        from .generation_stage_recovery import VERSION as STAGE_VERSION
+        from .generation_corrections import VERSION as CORRECTIONS_VERSION
+        from .generation_recovery_policy import VERSION as RECOVERY_VERSION
+        job.update(lean_version=LEAN_VERSION,stage_recovery_version=STAGE_VERSION,
+                   executable_corrections_version=CORRECTIONS_VERSION,recovery_policy_version=RECOVERY_VERSION)
+    if demand_coverage:
+        if not fault_first:raise ValueError('需求覆盖复核仅用于新故障优先流程')
+        from .generation_demands import VERSION
+        job['demand_coverage_version']=VERSION
+        from .generation_inventory_repair import VERSION as INVENTORY_VERSION
+        job['inventory_correction_version']=INVENTORY_VERSION
+        from .generation_stage_recovery import VERSION as RECOVERY_VERSION
+        job['stage_recovery_version']=RECOVERY_VERSION
+        from .generation_inventory_review import VERSION as REVIEW_VERSION
+        job['inventory_review_version']=REVIEW_VERSION
+        from .generation_interface_review import VERSION as INTERFACE_VERSION
+        job['interface_review_version']=INTERFACE_VERSION
+    if safeguards:
+        if not demand_coverage:raise ValueError('标准与覆盖保护需要需求覆盖流程')
+        from .generation_safeguards import VERSION
+        job['safeguards_version']=VERSION
+    if executable_corrections:
+        if not safeguards:raise ValueError('可执行纠正需要标准保护协议')
+        from .generation_corrections import VERSION as CORRECTIONS_VERSION
+        job['executable_corrections_version']=CORRECTIONS_VERSION
+    if recovery_policy:
+        if not executable_corrections:raise ValueError('恢复策略需要可执行纠正协议')
+        from .generation_recovery_policy import VERSION as RECOVERY_POLICY
+        job['recovery_policy_version']=RECOVERY_POLICY
     put(job)
     return job
 
@@ -209,6 +260,9 @@ def materialize(folder,files):
 
 
 def validate(job):
+    from .generation_demands import require_approved
+    require_approved(job)
+    from . import generation_fault_obligations as obligations
     if job.get('policy_version')!='roles-v1' and job.get('validation_count',0)>=3:raise ValueError('执行验证三次预算耗尽；需显式新契约版本')
     job['validation_count']=job.get('validation_count',0)+1;put(job)
     ok,reason=executor.availability()
@@ -219,6 +273,9 @@ def validate(job):
     validate_project(project,contract);validate_evaluation(evaluation,contract)
     faults=protocol.validate_faults(job,asset(job,'fingerprint')) if protocol.enabled(job) else None
     env=subprocess.run(['docker','image','inspect',executor.IMAGE,'--format','{{.Id}}'],capture_output=True,text=True,timeout=5,check=True).stdout.strip()
+    if ff.enabled(job):
+        ff.verify_fixed(job)
+        if env!=job['fault_freeze']['environment']:raise EnvironmentError('最终验证镜像与已冻结环境不同；恢复镜像，不重新改写代码')
     matrix={'id':s.ident(),'started':time.time(),'checks':[],'passed':False,'contract_hash':job['contract_hash'],'build_hash':digest(project.model_dump()),'evaluation_hash':digest(evaluation.model_dump()),'environment':env,'type':PROTOCOL,'trust':'模型生成结构化期望，平台可信解释器比较；需人工审核'}
     if job.get('matrix'):job.setdefault('validation_history',[]).append(job['matrix'])
     job['matrix']=matrix;put(job)
@@ -234,6 +291,10 @@ def validate(job):
             if time.monotonic()>deadline:raise TimeoutError('本次验证超过240秒')
             if get(job['id'])['status']=='cancelled':raise InterruptedError('生成已取消')
             record={'id':s.ident(),'version':version,'case':case.id,'group':case.group,'visibility':case.visibility,'covers':case.covers,'snapshot':digest(files)}
+            if obligations.enabled(job):
+                impact=next(i for i in faults['case_impacts'] if i['case_id']==case.id)
+                record['preliminary_group']=case.group
+                record['group']='target' if impact['affected_paths'] else 'regression'
             began=time.monotonic()
             try:
                 record['execution_attempt']=1
@@ -254,6 +315,7 @@ def validate(job):
                         if not record['repeat_consistent']:record['status']='failed'
             except Exception as exc:
                 record.update(status='error',error=type(exc).__name__+': '+str(exc)[:250],diagnostic=exception_diagnostic(exc));errors.append(record['error'])
+            if obligations.enabled(job) and version=='faulty':obligations.annotate(job,case.model_dump(),record)
             record['duration']=round(time.monotonic()-began,3);matrix['checks'].append(record);put(job)
     checks=matrix['checks']
     passed=lambda name:all(c['status']=='passed' for c in checks if c['version']==name)
@@ -261,6 +323,7 @@ def validate(job):
     gates={'normal':passed('normal'),'reference':passed('reference'),'fault_trigger':any(c.get('fault_match') and c.get('stable') for c in faulty),'fault_regression':all(c['status']=='passed' for c in faulty if c['group']=='regression'),
            'evasion_rejected':all(any(c['status']=='failed' and c['group']=='target' for c in checks if c['version']==name) and any(c['status']=='passed' and c['group']=='regression' for c in checks if c['version']==name) for name in project.evasions),'no_runtime_errors':not errors}
     from . import generation_fault_model as fm
+    if obligations.enabled(job):gates.update(obligations.gates(job,faulty))
     if fm.enabled(job):
         model=fm.frozen(job)
         for c in faulty:
@@ -269,6 +332,7 @@ def validate(job):
         matrix['fault_model_hash']=digest(model)
     if faults:gates['fingerprint_discriminates']=not any(c.get('fault_match') for c in checks if c['version'] in ('normal','reference'))
     matrix.update(gates=gates,passed=all(gates.values()),finished=time.time(),duration=round(time.monotonic()-start,3))
+    if ff.enabled(job):matrix['complete']=True
     put(job)
     from . import generation_handoff as handoff
     if handoff.enabled(job):
@@ -282,6 +346,7 @@ def validate(job):
 
 def work(id,stage):
     job=get(id)
+    if ff.enabled(job):return ff.run(id,stage)
     if job.get('policy_version')=='roles-v1':
         from .generation_flow import run
         return run(id,stage)
@@ -390,7 +455,7 @@ def cancel(id):
 def review_assets(id):
     from .generation_reliability import author_summary
     job=get(id)
-    return {'specification_conflict':job.get('spec_patch_conflict'),'spec_patch_attempts':job.get('spec_patch_attempts',{}),'diagnostic_evidence':job.get('diagnostic_evidence',[]),'evidence_request':job.get('evidence_request'),'handoff_conflicts':job.get('handoff_conflicts',[]),'candidate_history':job.get('candidate_history',[]),'candidate_assets':job.get('candidate_assets',{}),'handoff_rejections':job.get('handoff_rejections',[]),'summary':author_summary(job),'job':public(job),'contract_history':job.get('contract_history',[]),'contract_reviews':job.get('contract_reviews',[]),'review_digest':job.get('review_digest'),'diagnoses':job.get('diagnoses',[]),'failure_history':job.get('failure_history',[]),'asset_revisions':job.get('asset_revisions',[]),'validation_history':job.get('validation_history',[]),'contract_private_requirements':job.get('private_fault_requirements'),'matrix':job.get('matrix'),'assets':{name:asset(job,name) for name in job['assets']},'trust':'仅作者审核页面；不要将私有材料复制到训练 Agent。测试为模型提出的标准，仍需作者逐项审核。'}
+    return {'standard_candidate':job.get('standard_candidate'),'standard_review_history':job.get('standard_review_history',[]),'coverage_gaps':job.get('coverage_gaps',[]),'specification_conflict':job.get('spec_patch_conflict'),'spec_patch_attempts':job.get('spec_patch_attempts',{}),'diagnostic_evidence':job.get('diagnostic_evidence',[]),'evidence_request':job.get('evidence_request'),'handoff_conflicts':job.get('handoff_conflicts',[]),'candidate_history':job.get('candidate_history',[]),'candidate_assets':job.get('candidate_assets',{}),'handoff_rejections':job.get('handoff_rejections',[]),'summary':author_summary(job),'job':public(job),'contract_history':job.get('contract_history',[]),'contract_reviews':job.get('contract_reviews',[]),'review_digest':job.get('review_digest'),'diagnoses':job.get('diagnoses',[]),'failure_history':job.get('failure_history',[]),'asset_revisions':job.get('asset_revisions',[]),'validation_history':job.get('validation_history',[]),'contract_private_requirements':job.get('private_fault_requirements'),'matrix':job.get('matrix'),'assets':{name:asset(job,name) for name in job['assets']},'trust':'仅作者审核页面；不要将私有材料复制到训练 Agent。测试为模型提出的标准，仍需作者逐项审核。'}
 
 
 def publish(id,approved,note,review_digest):
@@ -398,6 +463,9 @@ def publish(id,approved,note,review_digest):
         job=get(id)
         if job['status']=='published':return {'task_id':job['published_task'],'version':job.get('published_version','1.0.0')}
         if job['status']!='awaiting_review' or not (job.get('matrix') or {}).get('passed'):raise ValueError('未通过验证与教学阶段，禁止发布')
+        if ff.enabled(job):ff.verify_fixed(job)
+        from .generation_demands import require_approved
+        require_approved(job)
         if job.get('candidate_assets'):raise ValueError('仍有未接受的候选资产，禁止发布')
         if not approved or len(note.strip())<10 or review_digest!=job['review_digest']:raise ValueError('需审核当前冻结资产并记录至少10字审核依据')
         expected=digest({'contract':job['contract_hash'],'assets':{k:digest(asset(job,k)) for k in review_keys(job)},'matrix':job['matrix']})
@@ -410,6 +478,10 @@ def publish(id,approved,note,review_digest):
         materialize(staging/'initial',project.faulty)
         for variant,files in [('normal',project.normal),('reference',project.reference)]:materialize(staging/'private'/variant,files)
         cases=[{**c.model_dump(),'contract':'generated_json','coverage':'；'.join(contract.behaviors[k] for k in c.covers),'output_schema':contract.output_schema} for c in ev.cases]
+        from .generation_fault_obligations import enabled as impacts_enabled
+        if impacts_enabled(job):
+            impacts={i['case_id']:i for i in asset(job,'fingerprint')['case_impacts']}
+            for case in cases:case['group']='target' if impacts[case['id']]['affected_paths'] else 'regression'
         # Fault fingerprints are author-only, never public training tests.
         for c in cases:
             c.pop('faulty_expected',None);c.pop('classification_reason',None)
@@ -444,7 +516,12 @@ def fork(id):
     with s.LOCK:
         original=get(id)
         if original['status']!='published':raise ValueError('只有已发布实例可新建版本')
-        job=create(Request.model_validate(original['request']),direct_build=direct.enabled(original))
+        from . import generation_demands as demands, generation_safeguards as guard, generation_lean as lean
+        job=create(Request.model_validate(original['request']),direct_build=direct.enabled(original),fault_first=ff.enabled(original),
+                   demand_coverage=demands.enabled(original),safeguards=guard.enabled(original),
+                   executable_corrections=bool(original.get('executable_corrections_version')) and not lean.enabled(original),
+                   recovery_policy=bool(original.get('recovery_policy_version')) and not lean.enabled(original),
+                   lean=lean.enabled(original))
         latest=s.get('task',original['published_task'])['version']
         next_version='1.0.'+str(int(latest.split('.')[-1])+1)
         job.update(parent_task=original['published_task'],target_version=next_version,contract=original['contract'],contract_version=1,contract_hash=original['contract_hash'],private_fault_requirements=original['private_fault_requirements'],assessment=original['assessment'],rationale='基于已发布任务的新版本；需重新确认、独立生成、验证和审核。',status='awaiting_contract')

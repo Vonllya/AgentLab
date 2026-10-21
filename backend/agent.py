@@ -96,23 +96,42 @@ def request_options(purpose='chat', retry=False):
     official=urlsplit(os.getenv('MODEL_BASE_URL','')).hostname=='api.deepseek.com'
     options={}
     if purpose=='generation':
+        from .generation_budget import output_multiplier
+        try:generation_cap=12000*output_multiplier()
+        except ValueError as exc:raise ModelFailure('configuration',str(exc),{}) from None
         selected=os.getenv('GENERATION_JSON_MODE','auto')
         if selected not in ('auto','json_object','prompt'):raise ModelFailure('configuration','GENERATION_JSON_MODE 配置无效',{})
         if selected=='json_object' or (selected=='auto' and official):options['response_format']={'type':'json_object'}
     if purpose in ('report','generation') and official and model.startswith('deepseek-v4-'):
         options['thinking']={'type':'disabled'}
-    return {'model':model,'max_tokens':(1800 if retry else 1200) if purpose=='report' else (12000 if purpose=='generation' else 4096),**options}
+    if purpose=='generation' and official and (model.startswith('deepseek-v4-') or model=='deepseek-flash'):
+        thinking=os.getenv('GENERATION_THINKING','disabled')
+        effort=os.getenv('GENERATION_REASONING_EFFORT','high')
+        if thinking not in ('enabled','disabled') or effort not in ('low','high','max'):
+            raise ModelFailure('configuration','生成推理配置无效',{})
+        options['thinking']={'type':thinking}
+        if thinking=='enabled':options['reasoning_effort']=effort
+    return {'model':model,'max_tokens':(1800 if retry else 1200) if purpose=='report' else (generation_cap if purpose=='generation' else 4096),**options}
+
+
+def generation_timeout():
+    try:value=int(os.getenv('GENERATION_REQUEST_TIMEOUT','90'))
+    except ValueError:raise ModelFailure('configuration','生成请求超时必须是30至300秒整数',{}) from None
+    if not 30<=value<=300:raise ModelFailure('configuration','生成请求超时必须是30至300秒整数',{})
+    return value
 
 
 def completion(messages,tools=None,*,purpose='chat',retry=False,timeout=60,output_limit=None):
     options=request_options(purpose,retry)
     if output_limit is not None:
-        if purpose!='generation' or type(output_limit) is not int or not 1<=output_limit<=12000:raise ValueError('非法生成预算')
+        # Explicit caps come from the persisted batch policy, which may outlive
+        # a changed environment default. Keep a fixed absolute ceiling.
+        if purpose!='generation' or type(output_limit) is not int or not 1<=output_limit<=48000:raise ValueError('非法生成预算')
         options['max_tokens']=output_limit
     meta={'model':options['model'],'max_tokens':options['max_tokens'],
           'output_constraint':options.get('response_format',{'type':'prompt_only'}),
           'thinking':options.get('thinking','unspecified; provider default unknown'),
-          'reasoning_effort':'unspecified','input_chars':sum(len(m.get('content') or '') for m in messages),
+          'reasoning_effort':options.get('reasoning_effort','unspecified'),'input_chars':sum(len(m.get('content') or '') for m in messages),
           'usage':{k:None for k in ('prompt_tokens','completion_tokens','total_tokens','reasoning_tokens')},
           'finish_reason':None,'content_empty':None,'content_chars':None,'parse_status':'not_received'}
     key=os.getenv('MODEL_API_KEY','')
@@ -134,6 +153,7 @@ def completion(messages,tools=None,*,purpose='chat',retry=False,timeout=60,outpu
                 meta['parse_status']='invalid_envelope'
                 raise ModelFailure('response_format','供应商响应格式不兼容，缺少有效 message',meta) from None
             meta['finish_reason']=choice.get('finish_reason')
+            meta['response_model']=data.get('model') if isinstance(data.get('model'),str) else None
             usage=data.get('usage') or {}
             if isinstance(usage,dict):
                 for k in ('prompt_tokens','completion_tokens','total_tokens'):

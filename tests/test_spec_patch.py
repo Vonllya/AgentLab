@@ -1,4 +1,5 @@
 import copy,json
+from pathlib import Path
 import pytest
 from backend import generation as g, generation_flow as flow, generation_roles as roles
 from backend import generation_direct as direct, generation_mock as mock, generation_spec_patch as sp
@@ -143,3 +144,132 @@ def test_remaining_full_bundle_branch_supplies_both_frozen_values(client):
     ctx=roles.context(j,'project_build')
     assert ctx['frozen_private_fault_requirements']==j['private_fault_requirements']
     assert ctx['frozen_fault_model']==g.asset(j,'project_build')['fault_model']
+
+
+@pytest.mark.parametrize('fault_first',[False,True])
+def test_missing_rule_parent_replacement_is_scoped_and_revalidated(client,monkeypatch,fault_first):
+    if fault_first:
+        from test_fault_first import prepared
+        j=prepared()
+        j['spec_review_feedback']={'reason':'只补输出规则，不改变原故障。','issues':[]}
+    else:j=ready()
+    old=copy.deepcopy(j['contract']);frozen=sp.current_bundle(j)
+    j['spec_review_feedback']['issues']=[{'path':'/behaviors/output_copy','reason':'补明输出字段复制输入内容的既定规则。'}]
+    g.put(j)
+    ctx=roles.context(j,'project_build')
+    assert ctx['allowed_paths']==['/behaviors']
+    target=ctx['patch_targets'][0]
+    assert target['before']==old['behaviors']
+    assert next(iter(target['value_schema']['patternProperties'].values()))['type']=='string'
+    assert target['issues'][0]['requested_path']=='/behaviors/output_copy'
+    after={**target['before'],'output_copy':'输出的内容应复制输入中对应字段。'}
+    raw={'contract_hash':ctx['contract_hash'],'bundle_hash':ctx['bundle_hash'],'decision':'patch',
+         'changes':[{'path':'/behaviors','before':target['before'],'after':after,'reason':'通过已有父字段增加审核要求的规则。'}],
+         'conflict_evidence':[],'explanation':'公开规则通过父字段局部补齐，其余资产保留。'}
+    # The actual flow and its legacy scope validator must accept the same plan.
+    monkeypatch.setattr(mock,'role_response',lambda stage,payload:raw)
+    flow.call(j,'project_build')
+    if fault_first:
+        from backend import generation_fault_first as ff
+        ff.install(j)
+    else:direct.install_bundle(j)
+    assert j['contract_version']==2 and j['confirmed_version'] is None
+    assert j['contract']['behaviors']==after
+    assert j['spec_review_feedback']['issues'][0]['path']=='/behaviors/output_copy'
+    assert {k:v for k,v in g.asset(j,'project_build').items() if k!='contract'}=={k:v for k,v in frozen.items() if k!='contract'}
+
+
+@pytest.mark.parametrize('sample',json.loads((Path(__file__).parent/'fixtures/spec_patch_review_failures.json').read_text()),ids=lambda s:f"baseline-{s['sample']}")
+def test_original_failed_handoffs_have_executable_scoped_targets(client,monkeypatch,sample):
+    j=ready();j['contract']=copy.deepcopy(sample['contract']);j['contract_hash']=g.digest(j['contract'])
+    j['spec_review_feedback']=copy.deepcopy(sample['review_feedback'])
+    bundle={'contract':copy.deepcopy(j['contract']),'private_fault_requirements':'Frozen private mechanism must not change.',
+            'project':{'normal':{'app.py':'frozen'},'reference':{'app.py':'frozen'}},'symptom_paths':[['records']]}
+    monkeypatch.setattr(sp,'current_bundle',lambda job:copy.deepcopy(bundle))
+    before=copy.deepcopy(j)
+    # Run public review validation as well as the patch protocol on original data.
+    review={'contract_hash':j['contract_hash'],'decision':'revise',**j['spec_review_feedback'],'questions':[],'output_rules':[]}
+    if sample['sample']==4:
+        # Five additions to six behaviors cannot fit the unchanged limit of ten.
+        # Reject that work order at review, then replay an explicitly reauthorized
+        # existing field. This is a controlled review correction, not model output.
+        with pytest.raises(sp.PatchError,match='字段上限') as e:direct.validate_review(j,review)
+        assert e.value.feedback['expected']['remaining_slots']==4
+        assert '/simulation' in e.value.feedback['expected']['existing_paths']
+        requests=j['request_count']
+        flow.failure(j,'spec_review',e.value)
+        reviewer=json.loads(roles.messages(j,'spec_review')[-1]['content'])
+        assert reviewer['validation_feedback']==e.value.feedback
+        assert reviewer['validation_feedback']['contract_hash']==j['contract_hash']
+        assert j['request_count']==requests
+        original=copy.deepcopy(j)
+        j['spec_review_feedback']={'reason':review['reason'],'issues':[{'path':'/simulation','reason':'在既有模拟说明补充审核指出的五项输出规则，不新增行为ID。'}]}
+        assert direct.validate_review(j,{**review,**j['spec_review_feedback']})['issues']==j['spec_review_feedback']['issues']
+        ctx=sp.basis(j);target=ctx['patch_targets'][0]
+        assert ctx['allowed_paths']==['/simulation']
+        text=target['before']+'\n输出规则补充：results按输入操作顺序一一对应；status由停止事件决定；attempt_count只统计实际调用；record_id按scenario内首次写入顺序递增；记录保留首次输入的operation_id和内容，列表按分配顺序返回。'
+        raw={'contract_hash':j['contract_hash'],'bundle_hash':ctx['bundle_hash'],'decision':'patch',
+             'changes':[{'path':'/simulation','before':target['before'],'after':text,'reason':'经重新审核明确授权，只补充既有模拟说明。'}],
+             'conflict_evidence':[],'explanation':'受控重新授权后执行原审核要求，保持行为ID和其余资产不变。'}
+        merged=sp.merge(j,raw)
+        assert merged['contract']['simulation']==text
+        assert merged['contract']['behaviors']==original['contract']['behaviors']
+        assert {k:v for k,v in merged.items() if k!='contract'}=={k:v for k,v in bundle.items() if k!='contract'}
+        stale=copy.deepcopy(raw);stale['changes']=sample['rejected_changes']
+        with pytest.raises(sp.PatchError,match='未授权字段'):sp.merge(j,stale)
+        return
+    assert direct.validate_review(j,review)['issues']==sample['review_feedback']['issues']
+    ctx=sp.basis(j)
+    assert ctx['allowed_paths']==['/behaviors']
+    target=ctx['patch_targets'][0]
+    after=copy.deepcopy(target['before'])
+    for change in sample['rejected_changes']:
+        # Sample 4 also submitted objects where Contract requires strings.
+        # Use its prose as a controlled correction, not a model-success claim.
+        value=change['after']
+        after[change['path'].split('/')[-1]]=value['description'] if isinstance(value,dict) else value
+    raw={'contract_hash':j['contract_hash'],'bundle_hash':ctx['bundle_hash'],'decision':'patch',
+         'changes':[{'path':'/behaviors','before':target['before'],'after':after,'reason':'保留所有原有规则，只添加本次审核指出的规则。'}],
+         'conflict_evidence':[],'explanation':'重放原失败工单，验证授权与执行范围一致。'}
+    merged=sp.merge(j,raw)
+    assert merged['contract']['behaviors']==after
+    assert {k:v for k,v in merged.items() if k!='contract'}=={k:v for k,v in bundle.items() if k!='contract'}
+    assert j==before
+    # Previously rejected direct insertion must remain rejected, with usable feedback.
+    bad=copy.deepcopy(raw);bad['changes']=sample['rejected_changes']
+    with pytest.raises(sp.PatchError) as e:sp.merge(j,bad)
+    assert e.value.feedback['expected']==ctx['patch_targets']
+    # Replacing a parent does not grant permission to edit/delete siblings.
+    for modification in ('change','delete'):
+        bad=copy.deepcopy(raw);key=next(iter(target['before']))
+        if modification=='change':bad['changes'][0]['after'][key]='Unauthorized unrelated rule.'
+        else:del bad['changes'][0]['after'][key]
+        with pytest.raises(sp.PatchError,match='审核事项之外'):sp.merge(j,bad)
+
+
+def test_mixed_existing_and_missing_rules_share_one_bounded_parent(client):
+    j=ready();j['spec_review_feedback']['issues'].append({'path':'/behaviors/new_rule','reason':'增加审核明确要求的新输出映射规则。'})
+    ctx=sp.basis(j);assert ctx['allowed_paths']==['/behaviors']
+    assert {i['requested_path'] for i in ctx['patch_targets'][0]['issues']}=={'/behaviors/sum','/behaviors/new_rule'}
+    after={**ctx['patch_targets'][0]['before'],'sum':'明确的算术和规则。','new_rule':'新字段对应输入中同名值。'}
+    raw=patch(j);raw['changes']=[{'path':'/behaviors','before':ctx['patch_targets'][0]['before'],'after':after,'reason':'仅改两个审核要求字段，保持其他内容。'}]
+    assert sp.merge(j,raw)['contract']['behaviors']==after
+
+
+def test_invalid_review_authority_rejected_before_paid_patch(client):
+    j=ready();j['spec_review_feedback']['issues']=[{'path':'/private_fault_requirements','reason':'不能授权私有资产或任意新根字段。'}]
+    requests=j['request_count']
+    with pytest.raises(ValueError):roles.messages(j,'project_build')
+    assert j['request_count']==requests
+
+
+def test_parent_target_keeps_exact_before_and_string_schema(client):
+    j=ready();j['spec_review_feedback']['issues']=[{'path':'/behaviors/output_copy','reason':'增加审核明确要求的输出复制规则。'}]
+    ctx=sp.basis(j);target=ctx['patch_targets'][0]
+    raw={**patch(j),'changes':[{'path':'/behaviors','before':target['before'],
+         'after':{**target['before'],'output_copy':{'description':'Not a string'}},'reason':'验证父字段补丁仍受原契约类型约束。'}]}
+    with pytest.raises(ValueError,match='valid string'):sp.merge(j,raw)
+    raw['changes'][0]['after']['output_copy']='输出复制输入内容。'
+    raw['changes'][0]['before']={}
+    with pytest.raises(sp.PatchError,match='before不匹配') as e:sp.merge(j,raw)
+    assert e.value.feedback['expected']==target['before']

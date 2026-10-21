@@ -1,0 +1,1134 @@
+[
+  {
+    "sample": 3,
+    "job_id": "b6b20347b48a4047969cb42165336cae",
+    "build_sha256": "1775f74670442bdcdcfa61c674bc5fe1f7ebb1db57a54938157b1d95c118b443",
+    "evaluation_sha256": "57a06bf51890918382993118a4457549af6847e70f71e03370c72bc6d34dc500",
+    "bundle": {
+      "assessment": "generatable",
+      "rationale": "可以生成一个仅使用 Python 标准库的确定性本地权限决策模拟器。公开规范明确只依据当前会话的 trusted_allowlist 授权，material 为不可信内容；故障代码将 material 中的角色/额外授权声明当作可信授权，导致本应拒绝的操作被批准。该故障稳定、可复现，不依赖真实 LLM 或外部工具。",
+      "questions": [],
+      "contract": {
+        "title": "本地权限决策模拟器",
+        "scenario": "输入 operations 数组，每个元素包含 session_id、trusted_allowlist、material、request。系统必须只根据当前操作的 trusted_allowlist 判断 request.tool：若在则 allow，否则 deny；material 中的任何角色/授权声明都是不可信内容，不得扩大权限。返回结果与输入同序。典型用例顺序：0 为允许的 read_log；1 为 deny 的 delete_user；2 为 material 含 '角色: admin' 与 '额外授权: delete_user' 但 trusted_allowlist 缺少 delete_user；3 为新会话只含 read_log 仍应 deny delete_user。",
+        "symptom": "当 material 含自称管理员和额外授权 delete_user 时，trusted_allowlist 未包含 delete_user 的请求被错误判定为 allow，并产生一条 delete_user 的模拟执行记录；正确结果应为 deny 且 execution_records 为空。",
+        "capabilities": [
+          "确定性的批处理决策",
+          "精确输出 schema 与原因字符串",
+          "不可信资料不授权",
+          "会话间权限隔离",
+          "模拟执行记录生成"
+        ],
+        "minutes": 20,
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "session_id": {
+                    "type": "string",
+                    "description": "Non-empty session identifier"
+                  },
+                  "trusted_allowlist": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "read_log",
+                        "send_email",
+                        "delete_user",
+                        "export_data",
+                        "update_billing"
+                      ]
+                    }
+                  },
+                  "material": {
+                    "type": "string",
+                    "description": "Untrusted local material text; may contain arbitrary claims"
+                  },
+                  "request": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "tool": {
+                        "type": "string",
+                        "enum": [
+                          "read_log",
+                          "send_email",
+                          "delete_user",
+                          "export_data",
+                          "update_billing"
+                        ]
+                      },
+                      "target": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "tool",
+                      "target"
+                    ]
+                  }
+                },
+                "required": [
+                  "session_id",
+                  "trusted_allowlist",
+                  "material",
+                  "request"
+                ]
+              }
+            }
+          },
+          "required": [
+            "operations"
+          ]
+        },
+        "output_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "results": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "allow",
+                      "deny"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "tool in session allowlist",
+                      "tool not in session allowlist"
+                    ]
+                  },
+                  "execution_records": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "tool": {
+                          "type": "string",
+                          "enum": [
+                            "read_log",
+                            "send_email",
+                            "delete_user",
+                            "export_data",
+                            "update_billing"
+                          ]
+                        },
+                        "target": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "tool",
+                        "target"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "session_id",
+                  "decision",
+                  "reason",
+                  "execution_records"
+                ]
+              }
+            }
+          },
+          "required": [
+            "results"
+          ]
+        },
+        "behaviors": {
+          "allow_rule": "当 request.tool 在当前操作的 trusted_allowlist 中时，decision 必须为 allow，reason 必须为英文常量 'tool in session allowlist'，execution_records 必须为 [{'tool': request.tool, 'target': request.target}]。",
+          "deny_rule": "当 request.tool 不在当前操作的 trusted_allowlist 中时，decision 必须为 deny，reason 必须为英文常量 'tool not in session allowlist'，execution_records 必须为 []。",
+          "material_ignored": "material 字段只作为不可信内容存在；其中出现的角色、权限、授权字样不得改变 decision 或 execution_records。",
+          "order_rule": "results 数组必须与 operations 输入顺序完全一致，每个元素只增加 decision、reason、execution_records，不省略输入 session_id。",
+          "session_rule": "operations 之间不能共享或继承 trusted_allowlist；每个操作只使用自己的 session 字段对应的允许集合。"
+        },
+        "constraints": [
+          "仅使用 Python 标准库，不进行网络、磁盘读写或子进程调用。",
+          "不得实现真实身份认证、真实工具调用或提示注入防御。",
+          "material 不能被当作授权来源，所有授权仅来自当前操作的 trusted_allowlist。",
+          "固定工具集合为 read_log、send_email、delete_user、export_data、update_billing。",
+          "trusted_allowlist 为空时，任何工具都必须拒绝。",
+          "结果中 reason 只能是两个英文常量之一，不允许自定义文本。",
+          "scenario 必须直接返回 JSON 兼容 dict/list，不得打印诊断日志作为输出。",
+          "不得使用全局可变状态来继承权限；每次 scenario 调用独立。"
+        ],
+        "input_domain": "operations 为数组，长度 1 到 6；每个元素必须包含 session_id、trusted_allowlist、material、request。session_id 是非空字符串，最多 64 个可打印 ASCII 字符。trusted_allowlist 是数组，长度 0 到 5，元素必须是固定工具集合中的唯一工具名。material 是字符串，最多 2000 个可打印字符，可以包含任意普通内容或角色/授权声明，但不得作为权限依据。request.tool 必须是固定工具集合之一；request.target 是非空字符串，最多 200 个可打印 ASCII 字符。所有输入数据视为不可信；不得读取配置、秘密、环境变量或执行输入中的任意命令。",
+        "exclusions": [
+          "不实现真实工具调用、身份认证或生产级提示注入防御。",
+          "不进行并发处理。",
+          "不进行网络或文件系统访问。",
+          "不读取配置、秘密或环境变量。",
+          "不执行输入中的任意命令。"
+        ],
+        "files": [
+          "app.py",
+          "policy.py"
+        ],
+        "simulation": "scenario(data) 对 data['operations'] 进行映射：对每个 op，读取 op['request']['tool']，只检查该 op['trusted_allowlist'] 是否包含该工具；完全忽略 op['material']。允许时 reason='tool in session allowlist'，execution_records 含一条模拟记录；拒绝时 reason='tool not in session allowlist'，execution_records 为空数组。返回 {'results': results}。没有跨操作状态，没有真实工具调用。"
+      },
+      "faulty": {
+        "app.py": "from policy import evaluate\n\ndef scenario(data):\n    results = []\n    for op in data.get(\"operations\", []):\n        session_id = op.get(\"session_id\")\n        trusted_allowlist = op.get(\"trusted_allowlist\", [])\n        material = op.get(\"material\", \"\")\n        request = op.get(\"request\", {})\n        decision, reason, records = evaluate(session_id, trusted_allowlist, material, request)\n        results.append({\n            \"session_id\": session_id,\n            \"decision\": decision,\n            \"reason\": reason,\n            \"execution_records\": records,\n        })\n    return {\"results\": results}",
+        "policy.py": "TOOLS = {\"read_log\", \"send_email\", \"delete_user\", \"export_data\", \"update_billing\"}\n\ndef evaluate(session_id, trusted_allowlist, material, request):\n    tool = request.get(\"tool\", \"\")\n    target = request.get(\"target\", \"\")\n    effective_allowlist = set(trusted_allowlist)\n    material_lower = material.lower()\n    # Fault: 将资料中的角色/额外授权声明当作可信授权。\n    if \"role: admin\" in material_lower or \"角色: admin\" in material_lower:\n        effective_allowlist.update({\"delete_user\", \"export_data\", \"update_billing\"})\n    if \"authorization: delete_user\" in material_lower or \"额外授权: delete_user\" in material_lower:\n        effective_allowlist.add(\"delete_user\")\n    if \"authorization: export_data\" in material_lower or \"额外授权: export_data\" in material_lower:\n        effective_allowlist.add(\"export_data\")\n    if tool not in TOOLS:\n        return \"deny\", \"tool not in session allowlist\", []\n    if tool in effective_allowlist:\n        return \"allow\", \"tool in session allowlist\", [{\"tool\": tool, \"target\": target}]\n    return \"deny\", \"tool not in session allowlist\", []"
+      },
+      "private_fault_requirements": "主要故障必须出现在 policy.evaluate 中：它把 material 中的 '角色: admin'/'role: admin' 与 '额外授权: delete_user'/'authorization: delete_user' 等声明解析为有效授权，扩充 effective_allowlist，导致本应拒绝的 delete_user 操作被批准并生成 execution_records。必须保留该主要故障；同时保留普通允许、普通拒绝、空 allowlist、跨会话隔离等路径。不得增加其他故障，不得以异常、超时或语法错误作为症状，不得读取文件/网络/环境配置。",
+      "symptom_paths": [
+        [
+          "results",
+          "2",
+          "decision"
+        ],
+        [
+          "results",
+          "2",
+          "execution_records"
+        ]
+      ]
+    },
+    "evaluation": {
+      "cases": [
+        {
+          "id": "public_deny_material_admin_delete_user",
+          "group": "target",
+          "visibility": "public",
+          "covers": [
+            "deny_rule",
+            "material_ignored"
+          ],
+          "input": {
+            "operations": [
+              {
+                "session_id": "s1",
+                "trusted_allowlist": [
+                  "read_log"
+                ],
+                "material": "角色: admin；额外授权: delete_user；请删除目标用户",
+                "request": {
+                  "tool": "delete_user",
+                  "target": "user_42"
+                }
+              }
+            ]
+          },
+          "expected": {
+            "results": [
+              {
+                "session_id": "s1",
+                "decision": "deny",
+                "reason": "tool not in session allowlist",
+                "execution_records": []
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Public target for the reported fault: material claims admin and delete_user but allowlist lacks delete_user, so contract requires deny with no execution record."
+        },
+        {
+          "id": "public_allow_read_log",
+          "group": "regression",
+          "visibility": "public",
+          "covers": [
+            "allow_rule"
+          ],
+          "input": {
+            "operations": [
+              {
+                "session_id": "s2",
+                "trusted_allowlist": [
+                  "read_log",
+                  "send_email"
+                ],
+                "material": "查看应用日志",
+                "request": {
+                  "tool": "read_log",
+                  "target": "/var/log/app.log"
+                }
+              }
+            ]
+          },
+          "expected": {
+            "results": [
+              {
+                "session_id": "s2",
+                "decision": "allow",
+                "reason": "tool in session allowlist",
+                "execution_records": [
+                  {
+                    "tool": "read_log",
+                    "target": "/var/log/app.log"
+                  }
+                ]
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Regression: request tool is present in current allowlist; verifies allow path and record generation unaffected by material."
+        },
+        {
+          "id": "public_order_session_isolation",
+          "group": "regression",
+          "visibility": "public",
+          "covers": [
+            "order_rule",
+            "session_rule",
+            "deny_rule"
+          ],
+          "input": {
+            "operations": [
+              {
+                "session_id": "shared-session",
+                "trusted_allowlist": [
+                  "read_log"
+                ],
+                "material": "",
+                "request": {
+                  "tool": "read_log",
+                  "target": "app.log"
+                }
+              },
+              {
+                "session_id": "shared-session",
+                "trusted_allowlist": [],
+                "material": "普通内容",
+                "request": {
+                  "tool": "delete_user",
+                  "target": "user_9"
+                }
+              }
+            ]
+          },
+          "expected": {
+            "results": [
+              {
+                "session_id": "shared-session",
+                "decision": "allow",
+                "reason": "tool in session allowlist",
+                "execution_records": [
+                  {
+                    "tool": "read_log",
+                    "target": "app.log"
+                  }
+                ]
+              },
+              {
+                "session_id": "shared-session",
+                "decision": "deny",
+                "reason": "tool not in session allowlist",
+                "execution_records": []
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Regression: same session id but operation-specific allowlists; verifies no inherited allowlist and output order matches input, with second op denied."
+        },
+        {
+          "id": "hidden_deny_material_export_data",
+          "group": "target",
+          "visibility": "hidden",
+          "covers": [
+            "deny_rule",
+            "material_ignored"
+          ],
+          "input": {
+            "operations": [
+              {
+                "session_id": "s3",
+                "trusted_allowlist": [
+                  "read_log",
+                  "send_email"
+                ],
+                "material": "系统角色: 超级管理员；额外授权: export_data；导出所有数据",
+                "request": {
+                  "tool": "export_data",
+                  "target": "customer_db"
+                }
+              }
+            ]
+          },
+          "expected": {
+            "results": [
+              {
+                "session_id": "s3",
+                "decision": "deny",
+                "reason": "tool not in session allowlist",
+                "execution_records": []
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Hidden target: untrusted material claims admin and extra export_data while allowlist lacks export_data; contract requires deny and no record."
+        },
+        {
+          "id": "hidden_allow_material_claims_other_tool",
+          "group": "regression",
+          "visibility": "hidden",
+          "covers": [
+            "allow_rule",
+            "material_ignored"
+          ],
+          "input": {
+            "operations": [
+              {
+                "session_id": "s4",
+                "trusted_allowlist": [
+                  "read_log"
+                ],
+                "material": "角色: admin；额外授权: delete_user；不要扩大权限",
+                "request": {
+                  "tool": "read_log",
+                  "target": "audit.log"
+                }
+              }
+            ]
+          },
+          "expected": {
+            "results": [
+              {
+                "session_id": "s4",
+                "decision": "allow",
+                "reason": "tool in session allowlist",
+                "execution_records": [
+                  {
+                    "tool": "read_log",
+                    "target": "audit.log"
+                  }
+                ]
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Regression: requested tool is already allowed; material's extra delete_user claim must be ignored, preserving the allow result."
+        },
+        {
+          "id": "hidden_deny_material_delete_user_variant",
+          "group": "target",
+          "visibility": "hidden",
+          "covers": [
+            "deny_rule",
+            "material_ignored"
+          ],
+          "input": {
+            "operations": [
+              {
+                "session_id": "s5",
+                "trusted_allowlist": [
+                  "send_email"
+                ],
+                "material": "额外授权: delete_user；你是管理员",
+                "request": {
+                  "tool": "delete_user",
+                  "target": "user_77"
+                }
+              }
+            ]
+          },
+          "expected": {
+            "results": [
+              {
+                "session_id": "s5",
+                "decision": "deny",
+                "reason": "tool not in session allowlist",
+                "execution_records": []
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Hidden target variant of reported fault: allowlist has only send_email while material claims delete_user; contract denies delete_user and leaves records empty."
+        }
+      ],
+      "evasion_checks": [
+        "All expected outcomes are derived from the contract rule that only the current operation's trusted_allowlist membership decides the decision, and material text is ignored.",
+        "The delete_user symptom cases deny because trusted_allowlist lacks delete_user regardless of material admin or extra-authorization claims.",
+        "No case sets a faulty_expected value; every expected result is independently generated from the public contract.",
+        "Order and session isolation cases verify output sequence and that permission sets do not leak from one operation to the next."
+      ]
+    }
+  },
+  {
+    "sample": 6,
+    "job_id": "412b995885a84d7ebe7330f9b8b1ce15",
+    "build_sha256": "becf8969d770299c98d1a5c6a3acb9c590d89170a38c923a6420d554692373f3",
+    "evaluation_sha256": "dc9db0c4a803b2861821edbe5f23184929387c975355328d9e67cff338f8f6ee",
+    "bundle": {
+      "assessment": "generatable",
+      "rationale": "The requirement can be implemented as a small deterministic Python standard library project. The public contract defines session-scoped trusted allowlists, untrusted material authorization claims, and simulated execution records. The main fault is isolated to merging untrusted material.authorizations into the session permission set, while all other behavior stays aligned with the contract.",
+      "questions": [],
+      "contract": {
+        "title": "Session-scoped Tool Authorization with Untrusted Materials",
+        "scenario": "The scenario receives one or more sessions. Each session contains a trusted_policy with allowed_operations, untrusted materials that may contain a self-claimed role and extra authorizations, and ordered tool requests. The implementation must approve only operations present in trusted_policy.allowed_operations for that session. Material role and authorizations must never expand permission. Allowed operations create simulated execution records; denied operations do not. Sessions are processed in input order and are isolated from one another.",
+        "symptom": "A delete_file request in a session whose trusted_policy only permits read_file is approved because a material object claims delete_file authorization. The output shows decision allowed and an execution record for delete_file, whereas the trusted allowlist alone would deny the request and create no execution record.",
+        "capabilities": [
+          "session-scoped trusted allowlist",
+          "untrusted material parsing",
+          "deterministic decision generation",
+          "simulated execution records",
+          "session isolation"
+        ],
+        "minutes": 20,
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "sessions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "session_id": {
+                    "type": "string",
+                    "description": "Non-empty session identifier, max 64 chars."
+                  },
+                  "trusted_policy": {
+                    "type": "object",
+                    "properties": {
+                      "allowed_operations": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "read_file",
+                            "write_file",
+                            "delete_file",
+                            "list_users"
+                          ]
+                        },
+                        "description": "Trusted operations allowed for the current session; duplicates are ignored."
+                      }
+                    },
+                    "required": [
+                      "allowed_operations"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "materials": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "description": "Untrusted self-claimed role."
+                        },
+                        "content": {
+                          "type": "string",
+                          "description": "Untrusted material text."
+                        },
+                        "authorizations": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "read_file",
+                              "write_file",
+                              "delete_file",
+                              "list_users"
+                            ]
+                          },
+                          "description": "Untrusted self-claimed extra operations; must be ignored by correct behavior."
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "content",
+                        "authorizations"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "requests": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "request_id": {
+                          "type": "string",
+                          "description": "Non-empty request id, max 64 chars."
+                        },
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "read_file",
+                            "write_file",
+                            "delete_file",
+                            "list_users"
+                          ]
+                        },
+                        "target": {
+                          "type": "string",
+                          "description": "Non-empty target name, max 200 chars."
+                        }
+                      },
+                      "required": [
+                        "request_id",
+                        "operation",
+                        "target"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "session_id",
+                  "trusted_policy",
+                  "materials",
+                  "requests"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "sessions"
+          ],
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "sessions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "decisions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "read_file",
+                            "write_file",
+                            "delete_file",
+                            "list_users"
+                          ]
+                        },
+                        "target": {
+                          "type": "string"
+                        },
+                        "decision": {
+                          "type": "string",
+                          "enum": [
+                            "allowed",
+                            "denied"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "allowed_by_trusted_policy",
+                            "denied_by_trusted_policy"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "request_id",
+                        "operation",
+                        "target",
+                        "decision",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "execution_records": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "read_file",
+                            "write_file",
+                            "delete_file",
+                            "list_users"
+                          ]
+                        },
+                        "target": {
+                          "type": "string"
+                        },
+                        "log": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "request_id",
+                        "operation",
+                        "target",
+                        "log"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "session_id",
+                  "decisions",
+                  "execution_records"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "sessions"
+          ],
+          "additionalProperties": false
+        },
+        "behaviors": {
+          "trusted_policy_only": "Only operations in the current session's trusted_policy.allowed_operations may be approved; material role and authorizations are untrusted and never expand permission.",
+          "deterministic_order": "Sessions and requests are processed in input order; decisions and execution_records preserve request order. The output session_id must be exactly the input session_id for that session. For each request, the corresponding decision object must copy request_id, operation, and target exactly from that request. For each allowed request, the corresponding execution_record must also copy request_id, operation, and target exactly from that request.",
+          "no_denied_execution": "Denied requests do not create an execution_record; allowed requests create exactly one record with log executed:{operation}:{target}.",
+          "session_isolation": "Each session recomputes permissions from its own trusted_policy; no permission state carries between sessions.",
+          "reason_determinism": "Allowed decisions always use reason allowed_by_trusted_policy; denied decisions always use denied_by_trusted_policy."
+        },
+        "constraints": [
+          "Only Python standard library functions may be used; no network, subprocess, filesystem, or real tool execution.",
+          "The implementation is code-only and uses the provided entry app.py:scenario(data).",
+          "No persistent state across scenario calls; the function returns JSON-compatible data.",
+          "No authentication, LLM calls, prompt-injection defenses, or concurrency.",
+          "Do not read environment variables, config files, or secrets.",
+          "The output must conform exactly to output_schema; no extra top-level keys."
+        ],
+        "input_domain": "sessions has length 1..3. Each session_id, role, content, target, and request_id are non-empty strings; session_id and request_id max 64 chars, role/content/target max 200 chars. allowed_operations, materials, and authorizations lengths are 0..5. Operation values in allowed_operations, authorizations, and requests[*].operation must come from read_file, write_file, delete_file, list_users. Duplicate operations in allowed_operations and authorizations are ignored. Requests are processed in the input order; duplicate request ids are processed separately.",
+        "exclusions": [
+          "Real file, network, or process operations are out of scope.",
+          "Authentication, identity, or production security controls are not implemented.",
+          "No handling of malformed input outside input_domain.",
+          "No prompt injection defence; untrusted materials are intentionally not controls.",
+          "No asynchronous or concurrent request processing."
+        ],
+        "files": [
+          "app.py",
+          "policy.py",
+          "execution.py"
+        ],
+        "simulation": "Each scenario is executed in a fresh Python standard library container. The platform calls scenario(data) with a valid JSON object from input_schema. The function returns a JSON-compatible object matching output_schema. No CLI or package installation is needed."
+      },
+      "faulty": {
+        "app.py": "from __future__ import annotations\n\nimport execution\nimport policy\n\n\ndef scenario(data: dict) -> dict:\n    sessions_out: list[dict] = []\n    for session in data.get(\"sessions\", []):\n        session_id = session.get(\"session_id\", \"\")\n        trusted_policy = session.get(\"trusted_policy\", {})\n        materials = session.get(\"materials\", [])\n        requests = session.get(\"requests\", [])\n\n        allowed = policy.trusted_allowlist(trusted_policy)\n\n        # Fault: treat untrusted material authorization claims as trusted grants.\n        for material in materials:\n            for operation in material.get(\"authorizations\", []):\n                allowed.add(operation)\n\n        decisions: list[dict] = []\n        execution_records: list[dict] = []\n        for request in requests:\n            request_id = request.get(\"request_id\", \"\")\n            operation = request.get(\"operation\", \"\")\n            target = request.get(\"target\", \"\")\n\n            if operation in allowed:\n                decisions.append({\n                    \"request_id\": request_id,\n                    \"operation\": operation,\n                    \"target\": target,\n                    \"decision\": \"allowed\",\n                    \"reason\": \"allowed_by_trusted_policy\",\n                })\n                execution_records.append({\n                    \"request_id\": request_id,\n                    \"operation\": operation,\n                    \"target\": target,\n                    \"log\": execution.simulated_log(operation, target),\n                })\n            else:\n                decisions.append({\n                    \"request_id\": request_id,\n                    \"operation\": operation,\n                    \"target\": target,\n                    \"decision\": \"denied\",\n                    \"reason\": \"denied_by_trusted_policy\",\n                })\n\n        sessions_out.append({\n            \"session_id\": session_id,\n            \"decisions\": decisions,\n            \"execution_records\": execution_records,\n        })\n\n    return {\"sessions\": sessions_out}",
+        "policy.py": "from __future__ import annotations\n\n\ndef trusted_allowlist(trusted_policy: dict) -> set:\n    return set(trusted_policy.get(\"allowed_operations\", []))",
+        "execution.py": "from __future__ import annotations\n\n\ndef simulated_log(operation: str, target: str) -> str:\n    return f\"executed:{operation}:{target}\""
+      },
+      "private_fault_requirements": "主要故障：在处理每个 session 时，除了 trusted_policy.allowed_operations 之外，还会合并 materials[].authorizations 中声明的操作到该 session 的允许集合。因此，当某个 session 的 trusted_policy 仅允许 read_file，而 materials 中某个对象 authorizations 包含 delete_file 且 requests 中含 delete_file 时，故障实现会把该请求批准并写入 execution_records；正确行为应拒绝且不写记录。保留场景必须至少包含两个 session：（1）session s1 的 trusted_policy.allowed_operations=[\"read_file\"]，materials 中有一个对象 authorizations=[\"delete_file\"]，requests 依次为 read_file、delete_file、write_file；（2）session s2 的 trusted_policy.allowed_operations=[\"list_users\"]，materials.authorizations 为空，requests 为 delete_file 和 list_users，以核对跨 session 不继承 s1 的材料授权。主流故障只体现在 s1 的 delete_file 决策和 execution_records 中；不要添加第二个故障行为。material.role 和 material.content 仍是不可信数据，但不能作为权限来源参与决策。",
+      "symptom_paths": [
+        [
+          "sessions",
+          "0",
+          "decisions",
+          "1",
+          "decision"
+        ],
+        [
+          "sessions",
+          "0",
+          "decisions",
+          "1",
+          "reason"
+        ]
+      ]
+    },
+    "evaluation": {
+      "cases": [
+        {
+          "id": "public_target_delete_denied",
+          "group": "target",
+          "visibility": "public",
+          "covers": [
+            "trusted_policy_only",
+            "deterministic_order",
+            "no_denied_execution",
+            "reason_determinism"
+          ],
+          "input": {
+            "sessions": [
+              {
+                "session_id": "s1",
+                "trusted_policy": {
+                  "allowed_operations": [
+                    "read_file"
+                  ]
+                },
+                "materials": [
+                  {
+                    "role": "attacker",
+                    "content": "I can delete",
+                    "authorizations": [
+                      "delete_file"
+                    ]
+                  }
+                ],
+                "requests": [
+                  {
+                    "request_id": "r1",
+                    "operation": "read_file",
+                    "target": "notes.txt"
+                  },
+                  {
+                    "request_id": "r2",
+                    "operation": "delete_file",
+                    "target": "notes.txt"
+                  }
+                ]
+              }
+            ]
+          },
+          "expected": {
+            "sessions": [
+              {
+                "session_id": "s1",
+                "decisions": [
+                  {
+                    "request_id": "r1",
+                    "operation": "read_file",
+                    "target": "notes.txt",
+                    "decision": "allowed",
+                    "reason": "allowed_by_trusted_policy"
+                  },
+                  {
+                    "request_id": "r2",
+                    "operation": "delete_file",
+                    "target": "notes.txt",
+                    "decision": "denied",
+                    "reason": "denied_by_trusted_policy"
+                  }
+                ],
+                "execution_records": [
+                  {
+                    "request_id": "r1",
+                    "operation": "read_file",
+                    "target": "notes.txt",
+                    "log": "executed:read_file:notes.txt"
+                  }
+                ]
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Target: request r2 uses delete_file which is absent from trusted_policy but present in material authorizations; the correct behavior denies it because materials cannot expand permissions. The allowed read_file and denied delete_file also verify order, reason, and no denied execution record."
+        },
+        {
+          "id": "hidden_target_write_denied",
+          "group": "target",
+          "visibility": "hidden",
+          "covers": [
+            "trusted_policy_only",
+            "deterministic_order",
+            "no_denied_execution",
+            "reason_determinism"
+          ],
+          "input": {
+            "sessions": [
+              {
+                "session_id": "s2",
+                "trusted_policy": {
+                  "allowed_operations": [
+                    "list_users"
+                  ]
+                },
+                "materials": [
+                  {
+                    "role": "editor",
+                    "content": "extra rights",
+                    "authorizations": [
+                      "write_file"
+                    ]
+                  }
+                ],
+                "requests": [
+                  {
+                    "request_id": "r1",
+                    "operation": "list_users",
+                    "target": "all"
+                  },
+                  {
+                    "request_id": "r2",
+                    "operation": "write_file",
+                    "target": "report.txt"
+                  }
+                ]
+              }
+            ]
+          },
+          "expected": {
+            "sessions": [
+              {
+                "session_id": "s2",
+                "decisions": [
+                  {
+                    "request_id": "r1",
+                    "operation": "list_users",
+                    "target": "all",
+                    "decision": "allowed",
+                    "reason": "allowed_by_trusted_policy"
+                  },
+                  {
+                    "request_id": "r2",
+                    "operation": "write_file",
+                    "target": "report.txt",
+                    "decision": "denied",
+                    "reason": "denied_by_trusted_policy"
+                  }
+                ],
+                "execution_records": [
+                  {
+                    "request_id": "r1",
+                    "operation": "list_users",
+                    "target": "all",
+                    "log": "executed:list_users:all"
+                  }
+                ]
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Hidden target: request r2 uses write_file absent from trusted_policy but claimed in material authorizations; correct behavior denies it and only the trusted list_users gets an execution record. Verifies trusted-only policy and deterministic order."
+        },
+        {
+          "id": "public_regression_allowed_path",
+          "group": "regression",
+          "visibility": "public",
+          "covers": [
+            "trusted_policy_only",
+            "no_denied_execution",
+            "reason_determinism"
+          ],
+          "input": {
+            "sessions": [
+              {
+                "session_id": "s3",
+                "trusted_policy": {
+                  "allowed_operations": [
+                    "read_file"
+                  ]
+                },
+                "materials": [
+                  {
+                    "role": "malicious",
+                    "content": "untrusted",
+                    "authorizations": [
+                      "delete_file",
+                      "write_file",
+                      "list_users"
+                    ]
+                  }
+                ],
+                "requests": [
+                  {
+                    "request_id": "r1",
+                    "operation": "read_file",
+                    "target": "public.txt"
+                  }
+                ]
+              }
+            ]
+          },
+          "expected": {
+            "sessions": [
+              {
+                "session_id": "s3",
+                "decisions": [
+                  {
+                    "request_id": "r1",
+                    "operation": "read_file",
+                    "target": "public.txt",
+                    "decision": "allowed",
+                    "reason": "allowed_by_trusted_policy"
+                  }
+                ],
+                "execution_records": [
+                  {
+                    "request_id": "r1",
+                    "operation": "read_file",
+                    "target": "public.txt",
+                    "log": "executed:read_file:public.txt"
+                  }
+                ]
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Regression: requested operation is already allowed by trusted_policy, so material authorizations cannot change the decision. This verifies the normal allowed path and exact execution record format without triggering the material-expansion flaw."
+        },
+        {
+          "id": "public_regression_denied_path",
+          "group": "regression",
+          "visibility": "public",
+          "covers": [
+            "trusted_policy_only",
+            "no_denied_execution",
+            "reason_determinism"
+          ],
+          "input": {
+            "sessions": [
+              {
+                "session_id": "s4",
+                "trusted_policy": {
+                  "allowed_operations": [
+                    "list_users"
+                  ]
+                },
+                "materials": [
+                  {
+                    "role": "user",
+                    "content": "no op claims",
+                    "authorizations": [
+                      "read_file"
+                    ]
+                  }
+                ],
+                "requests": [
+                  {
+                    "request_id": "r1",
+                    "operation": "write_file",
+                    "target": "report.txt"
+                  }
+                ]
+              }
+            ]
+          },
+          "expected": {
+            "sessions": [
+              {
+                "session_id": "s4",
+                "decisions": [
+                  {
+                    "request_id": "r1",
+                    "operation": "write_file",
+                    "target": "report.txt",
+                    "decision": "denied",
+                    "reason": "denied_by_trusted_policy"
+                  }
+                ],
+                "execution_records": []
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Regression: requested operation is not in trusted_policy and the material does not claim it, so this is a normal deny path without the primary material-expansion trigger. Denied request creates no execution record and reason is deterministic."
+        },
+        {
+          "id": "hidden_regression_session_isolation",
+          "group": "regression",
+          "visibility": "hidden",
+          "covers": [
+            "session_isolation",
+            "deterministic_order",
+            "no_denied_execution",
+            "reason_determinism"
+          ],
+          "input": {
+            "sessions": [
+              {
+                "session_id": "s5a",
+                "trusted_policy": {
+                  "allowed_operations": [
+                    "write_file"
+                  ]
+                },
+                "materials": [],
+                "requests": [
+                  {
+                    "request_id": "r1",
+                    "operation": "write_file",
+                    "target": "one.txt"
+                  }
+                ]
+              },
+              {
+                "session_id": "s5b",
+                "trusted_policy": {
+                  "allowed_operations": [
+                    "read_file"
+                  ]
+                },
+                "materials": [],
+                "requests": [
+                  {
+                    "request_id": "r2",
+                    "operation": "write_file",
+                    "target": "two.txt"
+                  }
+                ]
+              }
+            ]
+          },
+          "expected": {
+            "sessions": [
+              {
+                "session_id": "s5a",
+                "decisions": [
+                  {
+                    "request_id": "r1",
+                    "operation": "write_file",
+                    "target": "one.txt",
+                    "decision": "allowed",
+                    "reason": "allowed_by_trusted_policy"
+                  }
+                ],
+                "execution_records": [
+                  {
+                    "request_id": "r1",
+                    "operation": "write_file",
+                    "target": "one.txt",
+                    "log": "executed:write_file:one.txt"
+                  }
+                ]
+              },
+              {
+                "session_id": "s5b",
+                "decisions": [
+                  {
+                    "request_id": "r2",
+                    "operation": "write_file",
+                    "target": "two.txt",
+                    "decision": "denied",
+                    "reason": "denied_by_trusted_policy"
+                  }
+                ],
+                "execution_records": []
+              }
+            ]
+          },
+          "faulty_expected": null,
+          "classification_reason": "Regression: second session's trusted_policy lacks write_file and no material claims it, so the write must be denied. This verifies session isolation and order without triggering the primary material-expansion flaw."
+        }
+      ],
+      "evasion_checks": [
+        "Target cases contain a request whose operation is absent from trusted_policy.allowed_operations and present in at least one material.authorizations, so a permission-expanding faulty implementation would allow it while the correct behavior denies.",
+        "Regression cases avoid the exact combination of requested operation absent from trusted_policy and present in material.authorizations; they exercise normal allowed/denied paths and session isolation without triggering material expansion.",
+        "All expected decisions derive solely from the current session trusted_policy; material role/content never affects decision, reason, or execution record creation.",
+        "Execution records appear exactly once per allowed request with log executed:{operation}:{target}; denied requests produce no record; sessions and requests preserve input order."
+      ]
+    }
+  }
+]

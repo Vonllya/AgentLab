@@ -9,7 +9,7 @@ export function GenerationReview({id}:{id:string}){
  useEffect(()=>{void Promise.all([api('/generation/jobs/'+id),api('/author/generation/'+id)]).then(([j,r])=>{setJob(j);setReview(r)}).catch(e=>setError(String(e)))},[id]);
  const digest=review?.review_digest||review?.summary?.binding?.review_digest;
  useEffect(()=>{setApproved(false)},[digest]);
- const files=useMemo(()=>review?.assets?.build||{},[review]);
+ const files=useMemo(()=>review?.assets?.build||{faulty:review?.assets?.fault_candidate?.files||review?.assets?.project_build?.faulty,reference:review?.assets?.fixed_candidate?.files},[review]);
  if(error)return <main className="landing"><div className="banner error" role="alert">{error}</div><button onClick={()=>navigate('/generate/'+id)}>返回生成详情</button></main>;
  if(!job||!review)return <main className="landing"><p role="status">正在加载审核资产…</p></main>;
  const publish=async()=>{setBusy(true);setError('');try{await api('/author/generation/'+id+'/publish','POST',{approved,note,review_digest:digest});navigate('/generate/'+id)}catch(e){setError(String(e))}finally{setBusy(false)}};

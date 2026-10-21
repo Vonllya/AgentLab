@@ -2,6 +2,8 @@
 
 协议标识：`agentlab-generated-json-v1`；权威程序校验见 `backend/generation_schema.py`。
 
+当前新建实例另带 `fault_first_version=fault-first-v1`、`fault_impact_version=case-impact-v1`；下文旧协议依记录版本选择，不对历史资产强制迁移。
+
 ## 旧记录协议与上下文
 
 需求包含必填自然语言、可选分钟数、难度和偏好。设计输出 assessment（generatable / clarify / simulation / unsupported）、理由、澄清问题、公开 Contract、私有故障要求。公开契约包含标题、能力、症状、输入输出 JSON schema、行为 ID、约束、输入域、排除范围、业务文件、模拟范围。行为 ID 使用小写字母开头的字母数字下划线。
@@ -129,6 +131,99 @@ evidence_responses协议补充：无当前补充记录时省略或{}；有记录
 
 调用私有目录保存原 response、patch.json、合并后的 output.json 及输入/输出摘要。output.json 保持 Bundle 兼容性；项目取当前 build，不取旧初始代码。程序保留 private_fault_requirements/fault_model/project，模型不得重写它们。错误类别 spec_patch_invalid 附具体路径和当前期望；specification_conflict/spec_patch_exhausted 进入作者复核。此流程不新增学习者接口权限。
 
+替换式补丁现在由服务端从审核事项编译 `patch_targets`：每项给出现存 `path`、精确 `before`、`value_schema` 和原审核 `issues.requested_path/reason`。缺失的 `/behaviors/<id>` 通过现存 `/behaviors` 替换，多个事项合并为一个父字段目标；执行器仍按原事项逐字段检查差异，禁止修改或删除无关兄弟规则。原审核路径保留，不静默重写历史资产。若新增行为总数超过契约上限，审核阶段直接拒绝工单，并将剩余容量、现有字段和重新授权建议绑定当前 contract_hash 返回审核模型；不删除既有行为ID或放宽上限。缺失规则可由新的明确审核授权补入已有字段，但程序不自行选择语义归属。新旧补丁路径均须通过摘要、原值和完整契约校验。
+
 ### 构建请求 repair_handoff（输入字段，非响应协议变更）
 
 包含matrix/contract/build/evaluation/fingerprint摘要，edits（授权variant/path及代码中可核对symbols）、public_requirements（检查ID、公开input、objective、逐字段observed/required_value/matches）、omitted_public_checks及response_files。字段缺失与JSON null分开；故障断言和正确期望分开；规避检查不被要求修成正确实现。原私有工单留在作者审计，禁止整段转发隐藏诊断。构建响应仍必须返回完整版本文件集合。该输入随实际模型请求落盘，不是仅供UI展示的摘要。
+
+## fault-first-v1
+
+FaultBundle含assessment/rationale/questions/contract/faulty/private_fault_requirements/symptom_paths，不含normal/reference/evasions。故障复现响应以检查与behavior ID关联，服务端绑定设计原文。阶段故障/修复验收资产分别为fault_acceptance/fix_acceptance，包含phase、complete、passed、checks、环境和资产摘要。fault_freeze仅在完整故障矩阵通过后创建。Patch含base_hash/decision/changes/explanation；changes为允许路径的唯一before/after替换，保留缩进，最多两个文件；decision=needs_review不能夹带修改。修复版保存在fixed_candidate，通过后与规避资产重建旧Project格式，历史发布与训练读取保持兼容。全部阶段资产纳入审核摘要；新任务发布前重新验证冻结故障及修复快照与验收矩阵一致。详见FAULT_FIRST.md。
+
+### case-impact-v1
+
+影响审核资产上限48KiB，模型整份响应仍受原300KiB上限约束。故障审核响应 `decision=checks|design_conflict|specification_issue`。checks分支包含：`case_impacts[{case_id,affected_paths,fault_assertions,source_refs:[{source}],reason}]`，恰好覆盖全部检查；`checks[{case_id,behavior_id,reason,paths}]`只选择主要复现路径，不重复输出错误值。服务端将其绑定成原Fingerprint断言并保存规范/设计/评测binding。source只能取上下文sources字典中的ID；引文由固定资产定位，不让模型抄写。非空对象不能整体豁免，数组是原子字段，受影响字段与错误断言一一对应，无差异边界完整保留。
+
+问题分支提供 `issue{kind,case_ids,source_refs,explanation}`，不夹带检查或影响表；kind限定为design_indistinguishable/public_rule_missing/classification_or_impact_error。修复补丁新增conflicts，needs_review须引用两个真实requirement_id和不兼容条件，patch不夹带冲突。一次受控复核使用 `code_hash/decision/requirement_refs/issue/next_change`；程序限定allowed_decisions，只有存在已执行的未满足要求才允许代码动作。自由文本不能改变动作或权限。
+
+规范局部补齐继续使用既有Amendment（contract_hash、bundle_hash、授权path/before/after），程序保留最新faulty、symptom_paths和private_fault_requirements；显式design_rebuild才允许未冻结项目重新设计。每次修订保存历史版本并失效相关验收；规范改变则重新独立生成评测，不以执行结果决定正确期望。`recovery_stop`为私有作者资产，不发布到可读业务文件或训练工具。
+
+
+### demand-coverage-v1
+
+新实例可同时带`inventory-correction-v1`。清单首次生成仍用SpecReview，新关系规则schema明确minimum>=2。被拒清单保存在作者候选文件，局部响应Correction包含binding（contract_hash/source_hash/candidate_hash）、decision=patch|revise、reason、replacements、issues、interface_gap。patch仅替换已有唯一ID的完整需求项，不改有效原引用，其余项及output_rules原样复制；revise不夹带替换，通过既有接口重建或公开规范补齐流程处理。合并候选仍须完整校验，补丁通过不代表行为通过。历史未带此标记的任务不迁移。操作符执行语义未改：length_eq是每个选中值自身长度，count_eq是等于value的匹配值数量至少minimum，不是精确计数。
+
+Correction可选restore_ids（默认空，最多12项），每项candidate_id/accepted_id。仅在已接受义务仍绑定当前原需求时恢复候选改名：candidate_id必须存在且不是已接受ID，accepted_id必须已接受且当前缺失，二者一一对应，replacements必须包含目标ID完整项。不会增加/删除义务或自动推断映射；原文和类别以已接受义务为准。revise不允许夹带restore_ids。
+
+规范审核approve附requirements（最多12项）：id/source/quote/objective/kind/rules，source与连续quote须来自原用户输入。rule包含source=input|expected、path（至多8段）、op=eq|length_eq|distinct|equal|count_eq|last_eq、value、minimum。每项至少一个expected证据；shared_state须有同一输入中的distinct多实体证据（minimum至少2）。数组扩展`*`仅用于本节覆盖数据选择，不改变case-impact-v1主要故障断言的数组整体规则。
+
+coverage_review包含binding、逐需求findings（requirement_id/verdict/witnesses/reason）和omissions（原始source/quote/reason）。covered的全部见证case均须实际满足整组数据规则，不能依赖covers标签或跨case组合。输入资产不含实现/私有设计/实际输出；execution_performed=false。原需求、清单、规范和评测摘要共同绑定批准。补测试保持旧cases及evasion_checks原样，只追加；遗漏回清单审核时只传原文引用。全部私有阶段资产进入作者审核摘要，不进入学习者上下文。
+
+`stage-recovery-v1`（仅新建任务）新增：
+- `stage_corrections`：按阶段与输入绑定保存纠正次数及失败签名，普通恢复不清零。
+- `stage_correction`：同阶段原候选资产引用、完整校验反馈、当前次数与上限；覆盖审核绑定四类资产。
+- `clarification_guard` / `clarification_reviews`：疑似歧义及独立公开复核、校核的审核记录。规范误述返回受限构建补丁；真实需求歧义经校核后才询问用户。
+- 新预算批次显式清零子批次计数；不修改父记录。发布仍要求原执行矩阵及人工审核，不因纠正成功直接发布。
+
+新策略的公开 `published_defaults.version_semantics` 只说明代码版本与验收标准的关系，不是私有故障设计。正常/参考遵循正确契约，故障版违反目标行为以复现症状。`default.*` 引用依然不能用于决定业务字段值，只能用于合法运行/模拟说明；业务补丁引用 request/answer 等真实来源。
+
+`inventory-review-v1`（新建任务）扩展覆盖审核：
+- finding.verdict 可为 inventory_issue；challenges 必须与该类 finding 一一对应。
+- challenge 包含 requirement_id、source/quote、rule_indices、case_ids、reason；引用必须存在并绑定当前资产，不能提供代码或直接修改规则。
+- inventory_review 回复 binding（契约/原需求/清单/评测摘要及 challenge_hash）和 decisions。每项 correct_rules 必须提供 replacement_rules；keep_rules 不得带修改。只能处理被质疑项，未质疑规则须保留。
+- inventory_dispute 保存待复核资产；inventory_dispute_history 保留原清单及结果；inventory_dispute_resolution 将修改/驳回说明传到覆盖审核；applied_inventory_review 保证重启后采用幂等。
+- 旧任务继续使用原 Review，不能通过额外字段绕过旧协议。模型/测试资产不在宿主执行，原 Docker 判分与发布门禁不变。
+# interface-review-v1
+
+新任务覆盖响应扩展 `interface_proposals[]`，与 `interface_gap` 要求 ID 一一对应；每项包含 `requirement_id/source/quote/current_fields/missing_behavior/why_rules_or_tests_insufficient`。`current_fields` 是当前公开 input/output schema 的真实 JSON 指针。普通清单质疑和旧任务格式保持兼容。
+
+复用 `inventory_review` 检查点，根据持久化 `interface_proposal` 选择独立接口复核 schema。响应含绑定和逐项 `decisions[]`，`action` 为 `correct_rules`（完整 replacement_rules）、`add_tests` 或 `approve_interface`（具体 allowed_paths）。不得同时夹带其他动作的资产。
+
+批准后 `project_build` 使用 `BuildReply`：binding、decision（patch/return_review）、contract_changes、code_changes、reason、public_evidence。字段补丁严格检查授权路径和 before；代码补丁检查任务文件和唯一 before。`return_review` 只能引用存在的公开原文，不携带修改；该引用进入下一次独立请求。公开 schema 整体、任务文件清单、平台/私有配置不可授权修改。
+
+持久化 `interface_review_history`、`interface_authorization`、`interface_build_history`、`interface_builder_returns` 与 `interface_review_resolution`，完整保留原资产、结论和摘要。所有批准均失效于相关依据变化或冻结。构建安装后原覆盖批准失效，重新走独立验收；不变更发布/训练快照语义。
+
+新建任务使用 `interface-review-v2`，v1 历史记录不迁移。v2 的 decisions 必填 `rule_assessments`，每条当前规则恰好一次：rule_index、judgment（valid/invalid/uncertain）、resolution（preserve/replace/defer）、reason，defer 另给 unresolved_reason。invalid 只能 replace 或 defer，uncertain 只能 defer；replace 必须有实际规则纠正，不能仅 add_tests。被判为正确并 preserve 的规则不能从完整替换集合移除，声明 replace 的错误规则不能原样留存。
+
+新增 action=correct_rules_and_add_tests，允许同一要求同时修规则与补测试；add_tests/组合动作须填写具体 missing_scenarios。keep_rules 表示无需修改，unresolved 记录无法处理的具体原因并阻止继续构建/评测。不解析诊断文字来猜语义，结构化对应不能保证模型判断本身正确。
+
+## inventory-correction-v2：完整清单补齐
+
+新任务原批准候选的 requirements 字段缺失或为 [] 时，纠正 schema 切换为 SupplyCorrection：binding、decision=supply_inventory、reason、requirements（1–12 项完整 Demand）。禁止夹带 output_rules、契约、代码、restore_ids 或其他资产。程序复制原已校验审核字段，只放入模型提交的清单，再经过原完整校验，仍保护此前已接受的要求 ID、引用和类别。
+
+非空清单不允许 supply_inventory，继续使用 Correction 的局部替换。补齐后条目校验失败时，完整候选及逐项错误进入原审计，下一请求自动切换局部纠正；未经校验不得采用。绑定失效、冻结、非法结构和大小上限均拒绝；非列表或 ID 缺失/重复属于结构损坏，不按空清单覆盖，返回明确停止原因。共用原两次纠正和总预算，不增加自动重试额度。旧 v1 不开放整包补齐，旧记录不迁移；旧合并遇到非列表时也返回明确错误，避免裸 KeyError。
+
+## adoption-coverage-v1：正常标准采纳与覆盖缺口
+
+仅新建 API 任务及显式启用的重放带 `safeguards_version=adoption-coverage-v1`；旧记录按原协议恢复。
+
+- 补覆盖时，evaluation 响应改为 `base_hash` 与 `added_cases`。服务器复制完整旧评测后追加，校验摘要、重复 ID/输入期望、完整协议、接口及总场景上限。旧输入、期望、可见性、覆盖和规避要求不由模型重新提交；对旧测试的异议仍走既有复核入口。响应增量保存在 patch.json，合并后的完整资产保存在 output.json。
+- `standard_review` 属于现有评测 Agent 的独立调用，用于公开规范修订候选、批准清单及清单规则纠正的采纳前审查。输入只有原始需求、当前公开规范及候选；不传业务代码、私有机制或实际执行。返回 `binding/decision/reason/evidence/correction/correction_target`。绑定包含当前规范、原始需求与候选摘要，规则纠正另绑定原清单。
+- `accept` 允许采纳，仍须后续覆盖及 Docker 门禁；`revise` 保留旧标准，将具体理由交回候选创建阶段。公开补齐工单本身错误时，`correction_target=review_request` 退回规范审查，避免让构建继续服从错误要求；其他情况使用 candidate。每类/当前规范最多两次纠正，计入已有共享调用、输出、时间预算。审查的格式错误另受现有有界纠正限制。
+- `standard_candidate` 保存尚未采纳的资产，`standard_review_history` 保存候选、结论与审查资产引用；`standard_approval` 只对同一绑定有效。重启复用完成的审查，不重发已完成模型请求。显式新预算批次复制待审查候选，原批次保持不变。
+- 覆盖响应增加 `gap_resolutions`；每项含 gap_id、covered/out_of_scope、witnesses、source/quote、reason。`coverage_gaps` 保留此前 test_gap 的具体原因、旧用例 ID 和审核来源。covered 必须指向真实新增测试，并完成对应需求的覆盖判断；边界场景不必满足另一个成功场景的见证规则。out_of_scope 必须明确引用原始需求并解释原发现为何不成立。未逐项处理不能改口全覆盖或推进执行/发布。
+
+服务器校验引用、权限、绑定与实际数据，无法证明任意自然语言判断正确。新增测试是否真正区分错误实现仍需执行验证；模型的范围排除与标准审查仍须作者核对。不会把复核意见当作人工批准。
+
+重放后的补齐：增量候选失败时，反馈摘要使用 append_only 模式，明确旧测试仍在、剩余槽位及新增候选 ID，不再把增量 JSON 当作空的整套评测而声称全部覆盖缺失。清单规则的正常标准审查被拒绝时，回到定义清单的 spec_review：保留已接受 ID/来源/引用/类别，允许纠正目标与规则，重新经过采纳与覆盖审查。该理由也进入后续清单局部纠正上下文；依据过期或修复获准后不再作为当前指令，历史审计保留。作者审核 JSON 提供 standard_candidate、standard_review_history 和 coverage_gaps。新版本继承原任务的保护协议，待采纳候选禁止执行/发布。
+
+测试用例 ID：总长最多 96 字符，以小写英文字母开头，其余仅允许小写英文字母、数字、下划线和连字符。ID 应简短，详细说明放入说明字段。所有测试引用及失败预检共用该上限；保留唯一性与存在性校验，不自动截断或重命名。旧 ID 及冻结资产保持不变。
+
+### 可执行纠正协议 executable-corrections-v1
+
+新建应用生成任务显式启用；旧记录保留原协议，新版本继承源实例协议。采纳审查的模型响应为判别结构：accept仅有decision/reason/evidence；revise另有issues(path/reason/requested_change)及correction_target。模型不回填binding。调用审计保存standard_request，服务器核对持久化待审候选、实际资产摘要和当前调用后，为存储结果补上binding；过期/迟到响应不能采纳。
+
+纠正次数按服务器拥有的候选/工单依据计算，单任务最多两次纠正；响应内容变化不会刷新额度，完全相同候选及错误停止无进展。总模型、Token和时间预算继续生效，计数持久化。审查越过构建工单许可的必要修改先退回spec_review，不直接扩大路径；范围内意见更新实际spec_review_feedback，保留原未完成问题。
+
+清单patch允许rename_invalid_ids(candidate_id,new_id)，仅对当前未批准、格式非法的ID一对一改名。服务端复制其他字段，已批准/合法ID、冲突及合并拒绝。需要修改条目内容仍走原replacements校验。
+
+未冻结阶段fault_review可返回add_coverage和coverage_request(source/quote/behavior_ids/insufficient_cases/visibility/trigger_condition)，不携带代码或建议expected。服务端验证公开引用、真实场景、容量及次数，复用base_hash/added_cases入口；旧用例不变，覆盖与故障检查重新审核，只有实际Docker证据推进。该补充标记为代码分析指导，不称首次盲测；传给独立评测的仅是公开依据与场景条件。冻结后不原地追加；每记录此出口最多两次，容量和总预算不足明确停止。
+
+入口计数补齐：规范补丁reserve同样使用服务器修复任务依据，新任务不被旧工单计数提前拦截；每任务最多3次补丁调用、全批最多6次，仍受总预算限制。fault_review按新任务最多两次格式纠正，实际既有复核提案进入prior_review但标为待核对意见。coverage_sources给出可引用公开来源，引用/行为/场景无效时返回实际收到值和全部合法选择；新增用例至少匹配请求的可见性和行为标签，实际触发仍须后续审核和Docker验证。
+
+## lean-generation-v1
+
+新生成任务沿用 JSON scenario(data)、Contract、BehaviorEvaluation、故障影响和发布冻结格式。规范模型回复缩为 decision/reason/issues/questions；contract_hash 由程序记录，不再生成 output_rules 或 requirements.rules。覆盖回复为 decision=approve/add_tests/specification_issue、reason、missing_scenarios、issues。后两字段只用于相应决定，其余为空；missing_scenarios 是具体缺失场景说明，不是可执行规则。程序绑定审批的 contract/source/evaluation，不要求模型复制。
+
+新增公开元数据 lean_version、lean_coverage_reviews；历史 demand_reviews 仍可读。完整作者资产与审批摘要保持冻结发布机制。补测保持 base_hash/added_cases，原包由可信程序合并。旧协议资产无需迁移。

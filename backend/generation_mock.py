@@ -14,6 +14,62 @@ def response(stage,payload):
 
 
 def role_response(stage,payload):
+    from . import generation_lean as lean
+    if payload.get('lean_version')==lean.VERSION and stage in ('spec_review','coverage_review'):
+        return lean.mock_response(stage)
+    if stage=='standard_review':
+        source,original=next(iter(payload['requirement_sources'].items()))
+        result={'decision':'accept','reason':'MOCK固定采纳只验证状态与资产绑定，不代表真实语义审核。',
+                'evidence':[{'source':source,'quote':original[:1000]}]}
+        if 'runtime_facts' not in payload:result.update(binding=payload['binding'],correction='')
+        return result
+    if stage=='inventory_review' and payload.get('review_type')=='interface-review-v2':
+        return {'binding':payload['binding'],'decisions':[{'requirement_id':p['id'],'action':'keep_rules',
+            'reason':'MOCK固定保留仅验证结构化对应，不代表语义已验证。','replacement_rules':[],'allowed_paths':[],
+            'rule_assessments':[{'rule_index':i,'judgment':'valid','resolution':'preserve',
+                'reason':'MOCK固定规则判断，只用于离线协议回归。','unresolved_reason':''} for i in range(len(p['rules']))],
+            'missing_scenarios':[]} for p in payload['requirements']]}
+    if stage=='inventory_review' and payload.get('review_type') in ('interface-review-v1','interface-review-v2'):
+        return {'binding':payload['binding'],'decisions':[{'requirement_id':p['requirement_id'],'action':'add_tests',
+            'reason':'MOCK固定补测试结论仅验证路由，不代表真实接口语义复核。','replacement_rules':[],'allowed_paths':[]} for p in payload['proposals']]}
+    if stage=='project_build' and payload.get('authorization'):
+        source,quote=next(iter(payload['base_bundle']['contract']['behaviors'].items()))
+        return {'binding':payload['binding'],'decision':'return_review','contract_changes':[],'code_changes':[],
+            'reason':'MOCK固定退回工单仅验证权限与反馈路径，不代表语义判断。',
+            'public_evidence':[{'source':'contract.behaviors.'+source,'quote':quote}]}
+    if stage=='inventory_review':
+        return {'binding':payload['binding'],'decisions':[{'requirement_id':c['requirement_id'],
+            'verdict':'keep_rules','replacement_rules':[],
+            'reason':'MOCK固定拒绝用于离线验证反馈通路，不代表独立语义判断或真实模型纠正。'} for c in payload['challenges']]}
+    if stage=='coverage_review':
+        return {'binding':payload['binding'],'findings':[{'requirement_id':d['id'],'verdict':'covered' if any(x['matches'] for x in payload['data_evidence'][d['id']]) else 'test_gap',
+                 'witnesses':[x['case_id'] for x in payload['data_evidence'][d['id']] if x['matches']],
+                 'reason':'MOCK仅验证证据引用与状态机，不证明原需求语义被完整覆盖。'} for d in payload['requirements']], 'omissions':[]}
+    if payload.get('workflow')=='fault-first-v1':
+        project=response('build',{})
+        if stage=='project_build':
+            design=response('design',{})
+            if payload.get('previous_specification'):design['contract']=payload['previous_specification']
+            return {**design,'faulty':project['faulty'],'symptom_paths':[[]]}
+        if stage=='fingerprint':
+            cases=payload['candidate_cases']
+            result={'checks':[{'case_id':c['id'],'behavior_id':'sum','reason':'MOCK负数过滤导致总和偏大，只验证工程机制。','assertions':[{'path':[],'equals':sum(x for x in c['input']['values'] if x>=0)}]} for c in cases if sum(x for x in c['input']['values'] if x>=0)!=c['expected']]}
+            if payload.get('fault_impact_version'):
+                for c in result['checks']:c['paths']=[a['path'] for a in c.pop('assertions')]
+                result['case_impacts']=[]
+                for c in cases:
+                    actual=sum(x for x in c['input']['values'] if x>=0);different=actual!=c['expected']
+                    result['case_impacts'].append({'case_id':c['id'],'affected_paths':[[]] if different else [],
+                        'fault_assertions':[{'path':[],'equals':actual}] if different else [],
+                        'source_refs':[{'source':'private_fault_requirements'}],
+                        'reason':'MOCK按固定负数过滤机制核对有限输入，不是模型语义审核证明。'})
+            return result
+        if stage=='fault_review':
+            return {'code_hash':payload['code_hash'],'decision':'need_evidence','requirement_refs':[],'issue':None,
+                    'next_change':'MOCK固定模式不能推理实际冲突，保存当前证据并停止，不冒充真实复核成功。'}
+        if stage in ('fix_patch','fault_correct'):
+            return {'base_hash':payload['base_hash'],'decision':'patch','changes':[{'path':'calculator.py','before':'sum(v for v in values if v >= 0)','after':'sum(values)','reason':'MOCK补丁恢复完整整数累加，验证补丁绑定及执行。'}],'explanation':'MOCK仅测试流程，不代表需求驱动真实生成。'}
+        if stage=='evasions':return {k:project[k] for k in ('evasions','evasion_explanations')}
     if stage=='project_build' and payload.get('allowed_paths'):
         from .generation_spec_patch import pointer
         path=payload['allowed_paths'][0];before=pointer(payload['public_specification'],path)
@@ -27,13 +83,23 @@ def role_response(stage,payload):
         if payload.get('fault_model_policy'):
             bundle['fault_model']={'trigger':{'any_of':[[{'path':['values'],'quantifier':'any','operator':'lt','value':0}]]},'affected_paths':[[]],'preservation':'不含负数的输入维持完整的正确算术和行为。'}
         return bundle
+    if stage=='spec_review' and payload.get('correction_mode')=='supply_inventory':
+        return {'binding':payload['binding'],'decision':'supply_inventory','reason':'MOCK固定整数样例补齐清单，仅用于验证恢复机制，不代表真实生成能力。',
+            'requirements':[{'id':'mock_mechanics','source':'request.requirement','quote':payload['requirement_sources']['request.requirement'][:1200],
+                'objective':'MOCK只验证整数样例空列表输出，不能作为自由需求语义证据。','kind':'behavior',
+                'rules':[{'source':'expected','path':[],'op':'eq','value':0,'minimum':2}]}]}
     if stage=='spec_review':
         contract=payload.get('specification')
         if not contract and payload.get('proposed_assessment')=='unsupported':
             return {'contract_hash':payload['contract_hash'],'decision':'unsupported','reason':'MOCK 平台范围审查暂不支持该需求，不伪造生成。','issues':[],'questions':[],'output_rules':[]}
         if not contract:
             return {'contract_hash':payload['contract_hash'],'decision':'need_user','reason':'MOCK需求澄清夹具，不证明真实语义判断。','issues':[],'questions':payload['proposed_questions'],'output_rules':[]}
-        return {'contract_hash':payload['contract_hash'],'decision':'approve','reason':'MOCK 可验证性审查夹具，整数和规则明确，不证明真实模型审查质量。','issues':[],'questions':[], 'output_rules':[{'path':path,'quote':contract['behaviors']['sum'],'explanation':'MOCK 算术和规则定义该输出，空列表由empty规则定义为0。'} for path in payload['output_paths']]}
+        result={'contract_hash':payload['contract_hash'],'decision':'approve','reason':'MOCK 可验证性审查夹具，整数和规则明确，不证明真实模型审查质量。','issues':[],'questions':[], 'output_rules':[{'path':path,'quote':contract['behaviors']['sum'],'explanation':'MOCK 算术和规则定义该输出，空列表由empty规则定义为0。'} for path in payload['output_paths']]}
+        if payload.get('demand_coverage_version'):
+            result['requirements']=[{'id':'mock_mechanics','source':'request.requirement','quote':payload['requirement_sources']['request.requirement'][:1200],
+                                     'objective':'MOCK只测试原文追踪及固定空列表场景，不代表自由需求语义覆盖。','kind':'behavior',
+                                     'rules':[{'source':'expected','path':[],'op':'eq','value':0,'minimum':2}]}]
+        return result
     if stage=='fingerprint':
         result={'checks':[{'case_id':'negative','design_quote':payload['private_fault_requirements'],'reason':'MOCK 冻结的过滤负数设计，在负数加正数输入中仅保留正数。','assertions':[{'path':[],'equals':3}]}]}
         if payload.get('frozen_fault_model'):
@@ -52,7 +118,7 @@ def role_response(stage,payload):
             patch={'evaluation_hash':payload['evaluation_hash'],'action':action,'changes':changes,'additions':additions}
             return {'decision':'patch','reason':'MOCK 受限补丁，仅验证平台协议，不证明语义正确。','patch':patch,'issues':[]} if payload.get('project_flow') else patch
         value=response(stage,payload)
-        if payload.get('classification_policy')=='frozen_input_rules':
+        if payload.get('classification_policy')=='frozen_input_rules' or payload.get('fault_first_version')=='fault-first-v1':
             value['cases'][2].update(input={'values':[2,-3]},expected=-1)
         for c in value['cases']:
             c['faulty_expected']=None

@@ -1,0 +1,508 @@
+{
+  "request": {
+    "requirement": "我想练习 Agent 批处理工作流的中断恢复：流程依次准备数据、转换数据、生成结果，其中某些步骤已经完成并保存状态，恢复后却重复执行，产生重复的处理记录。请生成一个以这个问题为主要故障的小型 Python 工程。正常行为应在恢复时跳过已完成步骤，按原顺序执行剩余步骤；完整流程再次恢复应没有新增副作用，不同工作流实例的状态必须隔离。输入应能选择在各个步骤完成状态已持久化之后中断，并可在一次场景内多次恢复；用本地持久化的步骤执行记录验证是否重复，关闭重开存储后行为也应一致。只用标准库和容器临时目录，不接触外部服务，不考察写入副作用与保存完成状态之间的崩溃窗口，也不要求并发或分布式 exactly-once。",
+    "minutes": 20,
+    "difficulty": "",
+    "preference": ""
+  },
+  "contract": {
+    "title": "Interrupted batch workflow recovery duplicates completed steps",
+    "scenario": "A batch workflow consists of three ordered steps: prepare_data, transform_data, generate_result. Each workflow instance persists completed step names and step execution records in a local JSON file under a temporary directory. A run action may stop after persisting a named step, then later run actions resume the same workflow instance. The scenario can create multiple workflow instances and process several resume actions in one call. Expected resume behavior is to skip any step already present in completed_steps and execute only the remaining steps in order, appending a new execution record only for newly executed steps. The returned object contains the final persisted records and completed step state for each workflow instance.",
+    "symptom": "For a workflow that is interrupted after prepare_data and then resumed, the returned records contain more than one record for the same workflow_id and step prepare_data. If interrupted again after transform_data and then resumed to completion, transform_data is also duplicated even though completed_steps already contains both prepare_data and transform_data.",
+    "capabilities": [
+      "run a three-step workflow with interruption after a completed step",
+      "persist completed step state and execution records to local JSON files",
+      "resume workflow instances multiple times in one scenario",
+      "reopen local storage between run actions",
+      "isolate workflow instances by workflow_id"
+    ],
+    "minutes": 20,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflows": {
+          "type": "array",
+          "description": "Workflow instances to run in this scenario.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Unique workflow instance ID."
+              },
+              "runs": {
+                "type": "array",
+                "description": "Run actions for this workflow.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "break_after": {
+                      "type": "string",
+                      "enum": [
+                        "prepare_data",
+                        "transform_data",
+                        "generate_result",
+                        "complete"
+                      ],
+                      "description": "Stop after persisting this step, or complete all remaining steps."
+                    }
+                  },
+                  "required": [
+                    "break_after"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "id",
+              "runs"
+            ]
+          }
+        }
+      },
+      "required": [
+        "workflows"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "description": "Persisted step execution records from all workflow instances.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "workflow_id": {
+                "type": "string",
+                "description": "Workflow instance ID."
+              },
+              "run": {
+                "type": "integer",
+                "description": "One-based run action number."
+              },
+              "step": {
+                "type": "string",
+                "enum": [
+                  "prepare_data",
+                  "transform_data",
+                  "generate_result"
+                ],
+                "description": "Executed step name."
+              }
+            },
+            "required": [
+              "workflow_id",
+              "run",
+              "step"
+            ]
+          }
+        },
+        "states": {
+          "type": "array",
+          "description": "Final persisted state for each submitted workflow instance.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "workflow_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "complete",
+                  "interrupted"
+                ]
+              },
+              "completed_steps": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "prepare_data",
+                    "transform_data",
+                    "generate_result"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "workflow_id",
+              "status",
+              "completed_steps"
+            ]
+          }
+        }
+      },
+      "required": [
+        "records",
+        "states"
+      ]
+    },
+    "behaviors": {
+      "append_execution_record": "Every executed step appends exactly one record with workflow_id, run number, and step name.",
+      "skip_completed_steps": "A resume run must skip every step already stored in completed_steps and start from the first incomplete step in prepare_data, transform_data, generate_result order.",
+      "persist_completed_steps": "After a step executes, the completed step is added to completed_steps and the state is saved before the next run action.",
+      "complete_resume_no_side_effects": "A complete run that finds all steps already completed must append no new records and leave completed_steps unchanged.",
+      "instance_isolation": "Each workflow_id has a distinct persisted state and record list; one workflow must not read or write another's file.",
+      "reopen_storage": "Each run action reads from a closed local JSON file; after saving and closing, the next run reopens the file.",
+      "run_number": "For the i-th run action in a workflow's runs list, every step execution record appended during that run action uses run equal to i+1.",
+      "workflow_status": "A workflow's status is complete when completed_steps contains prepare_data, transform_data, and generate_result; otherwise status is interrupted."
+    },
+    "constraints": [
+      "Only Python standard library may be used, with files stored under a temporary directory.",
+      "No external services, network, databases, or OS-level concurrency.",
+      "The scenario must not raise exceptions or time out for valid input; invalid values are ignored.",
+      "Do not test crashes between executing a step and saving its completed step state.",
+      "Do not implement distributed exactly-once or coordination mechanisms.",
+      "Run actions are processed sequentially in input order."
+    ],
+    "input_domain": "workflows is a required array of 1 to 5 objects. Each workflow object must have id (1-40 characters from [A-Za-z0-9._-], unique within the scenario) and runs (1 to 6 objects). Each run object's break_after must be one of: prepare_data, transform_data, generate_result, complete. A step break_after means stop immediately after that step has been persisted; complete means execute remaining steps to completion. Invalid or missing break_after values perform no action for that run.",
+    "exclusions": [
+      "Do not test crash windows between side effects and completed-step persistence.",
+      "Do not test concurrent, distributed, or multiprocess workflow instances.",
+      "Do not require exactly-once delivery semantics.",
+      "Do not test storage corruption, file permission failures, or filesystem crashes.",
+      "Do not test workflow IDs that differ only after path sanitization.",
+      "Do not treat execution time, exceptions, or timeouts as symptoms."
+    ],
+    "files": [
+      "app.py",
+      "workflow.py",
+      "storage.py"
+    ],
+    "simulation": "The evaluator invokes app.py:scenario(data) once. The implementation creates a fresh temporary directory with tempfile.mkdtemp(). It processes data.workflows in order. For each run action, run_workflow loads the workflow JSON file from that directory if it exists, appends execution records for steps it chooses to execute, updates completed_steps, saves the JSON file, and closes it. After all run actions for a workflow, the final persisted records and state are appended to the returned records and states arrays. Workflow files are separate per id. Returned records are in execution order and include run numbers."
+  },
+  "state": {
+    "asset": "call-cd3d39e0bb454b108c7197c52b0a87f2",
+    "contract_hash": "c170abb587fa232f46a209eff63281dbf780036735c3b948545979209c374c05",
+    "source_hash": "f48c3e4f1c7a35b58b21f75b6318a1f4672647a9e8d7e8ebb4ac1e654b64aa7a",
+    "candidate_hash": "431c18d3f4f19359d8e4203c5ceff04aba432307214f95f72b323a8db92e0b19",
+    "feedback": {
+      "latest_error": {
+        "category": "inventory_correction_invalid",
+        "reason": "局部纠正不得改写有效的原需求引用",
+        "validation_feedback": {
+          "requirement_id": "ordered_workflow_steps"
+        }
+      },
+      "inventory_errors": {
+        "latest_error": {
+          "category": "demand_coverage_invalid",
+          "reason": "接口修订不能删除或改写既有原需求义务",
+          "validation_feedback": {
+            "requirement_id": "ordered_workflow_steps",
+            "previous": {
+              "id": "ordered_workflow_steps",
+              "source": "request.requirement",
+              "quote": "流程依次准备数据、转换数据、生成结果，其中某些步骤已经完成并保存状态，恢复后却重复执行，产生重复的处理记录。",
+              "objective": "The generated project must model a three-step batch workflow with fixed order and persisted completed-step state.",
+              "kind": "sequence",
+              "rules": [
+                {
+                  "source": "expected",
+                  "path": [
+                    "states",
+                    "*",
+                    "completed_steps",
+                    "*"
+                  ],
+                  "op": "count_eq",
+                  "value": "prepare_data",
+                  "minimum": 1
+                }
+              ]
+            },
+            "action": "保留需求ID、原文与证据类别；按新接口重新定位证据规则，不降低用户要求",
+            "contract_hash": "c170abb587fa232f46a209eff63281dbf780036735c3b948545979209c374c05"
+          }
+        },
+        "inventory_errors": {
+          "kind": "inventory_invalid",
+          "contract_hash": "c170abb587fa232f46a209eff63281dbf780036735c3b948545979209c374c05",
+          "errors": [
+            {
+              "field": "requirements.3",
+              "requirement_id": "instance_isolation",
+              "message": "Value error, 共享状态需求须在同一输入包含多个不同实体的证据",
+              "actual_type": "dict"
+            },
+            {
+              "field": "requirements.3.rules",
+              "requirement_id": "instance_isolation",
+              "message": "跨实体关系缺少同一input多个不同实体的distinct条件；请判断规则遗漏还是接口缺项"
+            }
+          ],
+          "omitted_count": 0,
+          "execution_performed": false,
+          "instruction": "依据原候选局部纠正；只报告已确定问题，不代表未列项语义已通过。缺接口或公开规则时revise，不猜期望。"
+        }
+      }
+    }
+  },
+  "previous": [
+    {
+      "id": "ordered_workflow_steps",
+      "source": "request.requirement",
+      "quote": "流程依次准备数据、转换数据、生成结果，其中某些步骤已经完成并保存状态，恢复后却重复执行，产生重复的处理记录。",
+      "objective": "The generated project must model a three-step batch workflow with fixed order and persisted completed-step state.",
+      "kind": "sequence",
+      "rules": [
+        {
+          "source": "expected",
+          "path": [
+            "states",
+            "*",
+            "completed_steps",
+            "*"
+          ],
+          "op": "count_eq",
+          "value": "prepare_data",
+          "minimum": 1
+        }
+      ]
+    },
+    {
+      "id": "resume_skip_no_side_effects",
+      "source": "request.requirement",
+      "quote": "正常行为应在恢复时跳过已完成步骤，按原顺序执行剩余步骤；完整流程再次恢复应没有新增副作用，不同工作流实例的状态必须隔离。",
+      "objective": "Resuming a workflow must skip completed steps, execute only remaining steps in order, add no side effects when already complete, and isolate instances.",
+      "kind": "behavior",
+      "rules": [
+        {
+          "source": "expected",
+          "path": [
+            "records",
+            "*",
+            "step"
+          ],
+          "op": "count_eq",
+          "value": "prepare_data",
+          "minimum": 1
+        }
+      ]
+    },
+    {
+      "id": "interrupt_and_reopen",
+      "source": "request.requirement",
+      "quote": "输入应能选择在各个步骤完成状态已持久化之后中断，并可在一次场景内多次恢复；用本地持久化的步骤执行记录验证是否重复，关闭重开存储后行为也应一致。",
+      "objective": "The scenario must allow interruption after any persisted step, multiple resume actions in one call, and verification through locally persisted execution records across storage reopen cycles.",
+      "kind": "sequence",
+      "rules": [
+        {
+          "source": "expected",
+          "path": [
+            "records",
+            "*",
+            "run"
+          ],
+          "op": "count_eq",
+          "value": 1,
+          "minimum": 1
+        }
+      ]
+    }
+  ],
+  "previous_source_hash": "f48c3e4f1c7a35b58b21f75b6318a1f4672647a9e8d7e8ebb4ac1e654b64aa7a",
+  "candidate": {
+    "contract_hash": "c170abb587fa232f46a209eff63281dbf780036735c3b948545979209c374c05",
+    "decision": "approve",
+    "reason": "The specification is internally complete for the listed output paths: step execution and run numbering are fixed by the input runs and completed-step state; status is fixed by completed_steps; instance isolation and local persistence across close/reopen are covered by behaviors and simulation. The Python scenario(data) interface can express the requested workflow, so no interface gap exists.",
+    "issues": [],
+    "questions": [],
+    "interface_gap": false,
+    "output_rules": [
+      {
+        "path": "/records/*/workflow_id",
+        "quote": "Every executed step appends exactly one record with workflow_id, run number, and step name.",
+        "explanation": "Each record is appended while processing a single workflow instance, so the workflow_id field is that workflow's submitted id."
+      },
+      {
+        "path": "/records/*/workflow_id",
+        "quote": "Each workflow_id has a distinct persisted state and record list; one workflow must not read or write another's file.",
+        "explanation": "This pins each record's workflow_id to the workflow instance being processed and prevents cross-workflow records."
+      },
+      {
+        "path": "/records/*/run",
+        "quote": "For the i-th run action in a workflow's runs list, every step execution record appended during that run action uses run equal to i+1.",
+        "explanation": "The run field is the one-based index of the run action that caused the step execution."
+      },
+      {
+        "path": "/records/*/step",
+        "quote": "A resume run must skip every step already stored in completed_steps and start from the first incomplete step in prepare_data, transform_data, generate_result order.",
+        "explanation": "The step field is the name of the step that was actually executed; resume starts from the first incomplete step and proceeds in order, so only newly executed steps create records."
+      },
+      {
+        "path": "/records/*/step",
+        "quote": "Every executed step appends exactly one record with workflow_id, run number, and step name.",
+        "explanation": "Each record's step value is one of the three fixed workflow step names: prepare_data, transform_data, or generate_result."
+      },
+      {
+        "path": "/states/*/workflow_id",
+        "quote": "Each workflow_id has a distinct persisted state and record list; one workflow must not read or write another's file.",
+        "explanation": "Each state object is the final persisted state for exactly one submitted workflow instance."
+      },
+      {
+        "path": "/states/*/status",
+        "quote": "A workflow's status is complete when completed_steps contains prepare_data, transform_data, and generate_result; otherwise status is interrupted.",
+        "explanation": "The status field is deterministic from whether completed_steps contains all three fixed steps."
+      },
+      {
+        "path": "/states/*/completed_steps/*",
+        "quote": "After a step executes, the completed step is added to completed_steps and the state is saved before the next run action.",
+        "explanation": "Each element is a step that has been executed and persisted; completed steps are never duplicated, and the order follows workflow order."
+      },
+      {
+        "path": "/states/*/completed_steps/*",
+        "quote": "A resume run must skip every step already stored in completed_steps and start from the first incomplete step in prepare_data, transform_data, generate_result order.",
+        "explanation": "Resume preserves existing completed_steps and appends only later steps in fixed order, making the completed_steps sequence deterministic."
+      }
+    ],
+    "requirements": [
+      {
+        "id": "ordered_workflow_steps",
+        "source": "request.requirement",
+        "quote": "我想练习 Agent 批处理工作流的中断恢复：流程依次准备数据、转换数据、生成结果，其中某些步骤已经完成并保存状态，恢复后却重复执行，产生重复的处理记录。",
+        "objective": "The project must model the three ordered workflow steps and persist completed step state and execution records.",
+        "kind": "sequence",
+        "rules": [
+          {
+            "source": "expected",
+            "path": [
+              "states",
+              "*",
+              "completed_steps",
+              "*"
+            ],
+            "op": "eq",
+            "value": "prepare_data",
+            "minimum": 1
+          }
+        ]
+      },
+      {
+        "id": "resume_skip_remaining_order",
+        "source": "request.requirement",
+        "quote": "正常行为应在恢复时跳过已完成步骤，按原顺序执行剩余步骤；完整流程再次恢复应没有新增副作用，不同工作流实例的状态必须隔离。",
+        "objective": "Resume behavior must skip completed steps, execute remaining steps in order, avoid side effects when already complete, and isolate workflow instances.",
+        "kind": "behavior",
+        "rules": [
+          {
+            "source": "expected",
+            "path": [
+              "records",
+              "*",
+              "step"
+            ],
+            "op": "eq",
+            "value": "transform_data",
+            "minimum": 1
+          }
+        ]
+      },
+      {
+        "id": "interrupt_multiple_resume_reopen",
+        "source": "request.requirement",
+        "quote": "输入应能选择在各个步骤完成状态已持久化之后中断，并可在一次场景内多次恢复；用本地持久化的步骤执行记录验证是否重复，关闭重开存储后行为也应一致。",
+        "objective": "The scenario must permit interruption after any persisted step, multiple resume runs in one call, and persisted-record verification across storage close/reopen cycles.",
+        "kind": "sequence",
+        "rules": [
+          {
+            "source": "expected",
+            "path": [
+              "records",
+              "*",
+              "run"
+            ],
+            "op": "count_eq",
+            "value": 1,
+            "minimum": 1
+          }
+        ]
+      },
+      {
+        "id": "instance_isolation",
+        "source": "request.requirement",
+        "quote": "不同工作流实例的状态必须隔离",
+        "objective": "Each workflow_id must have distinct persisted state and record list and must not read or write another workflow's file.",
+        "kind": "shared_state",
+        "rules": [
+          {
+            "source": "expected",
+            "path": [
+              "records",
+              "*",
+              "workflow_id"
+            ],
+            "op": "distinct",
+            "minimum": 2
+          }
+        ]
+      }
+    ]
+  },
+  "patch": {
+    "binding": {
+      "contract_hash": "c170abb587fa232f46a209eff63281dbf780036735c3b948545979209c374c05",
+      "source_hash": "f48c3e4f1c7a35b58b21f75b6318a1f4672647a9e8d7e8ebb4ac1e654b64aa7a",
+      "candidate_hash": "431c18d3f4f19359d8e4203c5ceff04aba432307214f95f72b323a8db92e0b19"
+    },
+    "decision": "patch",
+    "reason": "局部修正被拒的两条需求。ordered_workflow_steps 恢复原 count_eq 证据规则，避免 eq 要求每个已完成步骤都等于 prepare_data；instance_isolation 补充同一 input.workflows[*].id 的 distinct 条件，并将原 records 工作流 ID 全量互异改为 states 工作流 ID 互异，避免同一工作流多条执行记录导致关系证据必失败。接口可以表达隔离要求，不改变其他清单或 output_rules。",
+    "interface_gap": false,
+    "replacements": [
+      {
+        "id": "ordered_workflow_steps",
+        "source": "request.requirement",
+        "quote": "流程依次准备数据、转换数据、生成结果，其中某些步骤已经完成并保存状态，恢复后却重复执行，产生重复的处理记录。",
+        "objective": "The generated project must model a three-step batch workflow with fixed order and persisted completed-step state.",
+        "kind": "sequence",
+        "rules": [
+          {
+            "source": "expected",
+            "path": [
+              "states",
+              "*",
+              "completed_steps",
+              "*"
+            ],
+            "op": "count_eq",
+            "value": "prepare_data",
+            "minimum": 1
+          }
+        ]
+      },
+      {
+        "id": "instance_isolation",
+        "source": "request.requirement",
+        "quote": "不同工作流实例的状态必须隔离",
+        "objective": "Each workflow_id must have distinct persisted state and record list and must not read or write another workflow's file.",
+        "kind": "shared_state",
+        "rules": [
+          {
+            "source": "input",
+            "path": [
+              "workflows",
+              "*",
+              "id"
+            ],
+            "op": "distinct",
+            "minimum": 2
+          },
+          {
+            "source": "expected",
+            "path": [
+              "states",
+              "*",
+              "workflow_id"
+            ],
+            "op": "distinct",
+            "minimum": 2
+          }
+        ]
+      }
+    ]
+  },
+  "origin_job": "b829bdcd7e894e95b3b88377d6da5a69",
+  "origin_asset": "call-6013c0607cdd469d8e3b6f945c63a1e5"
+}

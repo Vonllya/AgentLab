@@ -8,10 +8,11 @@ from pydantic import ValidationError
 from . import generation as g, generation_budget as budget, generation_roles as roles, generation_diagnostics as diagnostics, contract_revision as contracts, agent, storage as s
 from . import generation_protocol as protocol, generation_direct as direct, generation_handoff as handoff, generation_format as fmt
 from .generation_evidence import EvidenceResponseError
-from . import generation_spec_patch as sp
+from . import generation_spec_patch as sp, generation_fault_first as ff
 from .generation_schema import Contract,Project,validate_project,Teaching,Request
 
 STATES={'project_build':'building','spec_review':'reviewing_spec','design':'analyzing','build':'building','evaluation':'evaluating','fingerprint':'evaluating','diagnosis':'diagnosing','repair_build':'repairing_build','validation':'validating','teaching':'teaching','contract_review':'clarifying_contract','contract_check':'checking_contract','contract_apply':'checking_contract'}
+STATES.update(ff.STAGES)
 ACTIVE_STATES=set(STATES.values())|{'waiting_backoff'}
 
 
@@ -23,6 +24,11 @@ def check(job):
 
 
 def save_candidate(job,stage,output,directory):
+    from . import generation_safeguards as guard
+    if guard.enabled(job) and stage=='project_build' and job.get('installed_bundle'):
+        (directory/'output.json').write_text(json.dumps(output,ensure_ascii=False))
+        guard.begin(job,'public_patch',directory.name)
+        return
     if handoff.enabled(job) and job.get('matrix') and stage in ('build','evaluation','fingerprint'):
         (directory/'output.json').write_text(json.dumps(output,ensure_ascii=False))
         handoff.stage_candidate(job,stage,directory.name);job['revision']=job.get('revision',0)+1
@@ -35,34 +41,56 @@ def save_candidate(job,stage,output,directory):
 
 
 def call(job,stage):
+    from .generation_lean import restore_validation_feedback
+    restore_validation_feedback(job,stage)
     check(job)
-    patching=stage=='project_build' and sp.enabled(job)
-    if patching:sp.reserve(job,consume=False)
-    messages=fmt.messages(job,stage,roles.messages(job,stage));encoded=json.dumps(messages,ensure_ascii=False)
+    from . import generation_inventory_repair as inventory
+    from . import generation_recovery_policy as rp
+    output_retry=rp.recovering_output(job,stage)
+    correcting_inventory=stage=='spec_review' and inventory.pending(job)
+    if correcting_inventory and not output_retry:inventory.check_allowance(job)
+    from . import generation_interface_review as interface
+    patching=stage=='project_build' and sp.enabled(job) and not interface.building(job)
+    if patching and not output_retry:sp.reserve(job,consume=False)
+    messages=roles.messages(job,stage)
+    messages=rp.compact_output_messages(job,stage,messages) if output_retry else fmt.messages(job,stage,messages)
+    encoded=json.dumps(messages,ensure_ascii=False)
+    from . import generation_stage_recovery as stage_recovery
+    correction=stage_recovery.correction_context(job,stage)
+    if correction and not output_retry:
+        messages[-1]['content']+='\n当前阶段纠正资料（不可信候选）：'+json.dumps(correction,ensure_ascii=False)
+        encoded=json.dumps(messages,ensure_ascii=False)
     with s.LOCK:
         check(job);cap=budget.reserve(job,stage,len(encoded.encode()))
-        if patching:sp.reserve(job)
+        if correcting_inventory and not output_retry:inventory.reserve(job)
+        if patching and not output_retry:sp.reserve(job)
         directory=g.root(job)/('call-'+s.ident());directory.mkdir(parents=True)
         (directory/'input.json').write_text(encoded)
         audit={'stage':stage,**roles.identity(job,stage),'attempt':1+sum(a['stage']==stage for a in job['attempts']),'contract_version':job['contract_version'],'input_hash':g.digest(messages),'started':time.time(),'status':'running','reserved_tokens':cap,'asset':directory.name,'blind':stage=='evaluation' and not job.get('evaluation_review_guided',False)}
+        audit['input_bytes']=len(encoded.encode())
+        if output_retry:audit['output_recovery_of']=job['output_recovery']['previous_asset']
         if patching:audit['specification_patch']=True
+        if correcting_inventory:audit.update(inventory_correction=True,inventory_correction_attempt=job['inventory_correction_calls'])
+        if correction:audit['stage_correction_attempt']=correction['attempt']
         if stage=='evaluation' and job.get('coverage_repair'):audit['coverage_completion']=True
         if stage=='project_build' and not patching and job.get('format_correction'):
             audit['format_repair_of']=job['format_correction']['asset']
             audit['format_repair_attempt']=job['format_correction']['attempts']
+        if stage=='standard_review':audit['standard_request']=copy.deepcopy(job.get('standard_candidate'))
         job['attempts'].append(audit);job['request_count']+=1;job.update(stage=stage,status=STATES[stage],active_action={'stage':stage,'asset':directory.name});g.put(job)
-    meta={};settled=False;raw=None
+    meta={};settled=False;raw=None;inventory_candidate=None
     try:
         if job['mode']=='mock':
             from .generation_mock import role_response
             raw=role_response(stage,copy.deepcopy(roles.context(job,stage)));meta={'model':'MOCK deterministic roles','usage':{'completion_tokens':0},'finish_reason':'stop'}
         else:
             result=queue.Queue(maxsize=1)
+            request_timeout=min(agent.generation_timeout(),budget.remaining(job))
             def invoke():
-                try:result.put((True,agent.completion(messages,purpose='generation',timeout=min(90,budget.remaining(job)),output_limit=cap)))
+                try:result.put((True,agent.completion(messages,purpose='generation',timeout=request_timeout,output_limit=cap)))
                 except Exception as exc:result.put((False,exc))
             threading.Thread(target=invoke,daemon=True).start()
-            deadline=time.monotonic()+min(100,budget.remaining(job))
+            deadline=time.monotonic()+min(request_timeout+10,budget.remaining(job))
             while True:
                 check(job)
                 if time.monotonic()>=deadline:raise agent.ModelFailure('timeout','角色调用超时，迟到响应不能推进资产')
@@ -73,12 +101,32 @@ def call(job,stage):
             if len(text.encode())>300000:raise ValueError('模型资产超过300KiB')
             (directory/'response.txt').write_text(text);raw=json.loads(text)
         budget.settle(job,audit,meta);settled=True;check(job)
-        parsed=roles.schema(job,stage).model_validate(raw).model_dump()
+        if stage=='spec_review' and inventory.enabled(job):
+            inventory_candidate=inventory.merge(job,raw) if correcting_inventory else raw
+            inventory.inspect_review(job,inventory_candidate)
+            if correcting_inventory:
+                inventory.correction_schema(job).model_validate(raw)
+                (directory/'patch.json').write_text(json.dumps(raw,ensure_ascii=False))
+            parsed=inventory.SpecReview.model_validate(inventory_candidate).model_dump()
+        else:parsed=roles.schema(job,stage).model_validate(raw).model_dump()
+        from . import generation_interface_review as interface
+        if stage=='project_build' and interface.building(job):
+            (directory/'patch.json').write_text(json.dumps(parsed,ensure_ascii=False))
+            parsed=interface.merge_build(job,parsed)
         if patching:
             (directory/'patch.json').write_text(json.dumps(parsed,ensure_ascii=False))
             parsed=sp.merge(job,parsed)
-        if stage=='project_build':parsed=direct.validate_bundle(job,parsed)
+        if stage=='standard_review':
+            from .generation_safeguards import bind_response
+            parsed=bind_response(job,parsed,audit)
+        if ff.enabled(job) and ff.schema(job,stage):parsed=ff.validate_response(job,stage,parsed)
+        if stage=='project_build' and not ff.enabled(job):parsed=direct.validate_bundle(job,parsed)
         if stage=='spec_review':parsed=direct.validate_review(job,parsed)
+        from . import generation_lean as lean
+        if lean.enabled(job) and stage=='coverage_review':parsed=lean.validate_coverage(job,parsed)
+        if stage=='inventory_review':
+            from .generation_inventory_review import validate as validate_inventory_review
+            parsed=validate_inventory_review(job,parsed)
         if stage=='build':validate_project(Project.model_validate(parsed),Contract.model_validate(job['contract']))
         if stage=='repair_build':
             parsed=handoff.builder_result(job,parsed) if handoff.enabled(job) else diagnostics.merge_repair(job,parsed)
@@ -88,6 +136,10 @@ def call(job,stage):
                 job.pop('active_action',None);g.put(job)
                 return {'handoff_return':True}
         if stage=='evaluation':
+            from . import generation_safeguards as guard
+            if guard.appending(job):
+                (directory/'patch.json').write_text(json.dumps(parsed,ensure_ascii=False))
+                parsed=guard.merge_additions(job,parsed)
             if direct.enabled(job) and job.get('evaluation_repair'):
                 if parsed['decision']!='patch':
                     job['spec_dispute']={k:parsed[k] for k in ('decision','reason','issues')}
@@ -96,11 +148,15 @@ def call(job,stage):
             if not (direct.enabled(job) and job.get('spec_dispute') and isinstance(parsed,dict) and parsed.get('decision') in ('specification_issue','reject_plan')):
                 if protocol.enabled(job) and job.get('evaluation_repair'):parsed=protocol.merge_patch(job,parsed)
                 parsed=diagnostics.validate_evaluation_revision(job,parsed)
+                from . import generation_demands as demands
+                if demands.enabled(job):demands.validate_evaluation(job,parsed)
         if stage=='fingerprint':parsed=protocol.validate_faults(job,parsed)
         if stage=='diagnosis':parsed=handoff.validate_order(job,parsed) if handoff.enabled(job) else diagnostics.validate_plan(job,parsed)
         if stage=='contract_review':parsed=contracts.validate_proposal(job,parsed)
         if stage=='contract_check':parsed=contracts.validate_check(job,parsed)
         audit.update(status='completed',finished=time.time(),output_hash=g.digest(parsed),metadata=meta)
+        if stage=='spec_review' and inventory.enabled(job):
+            job.pop('inventory_correction',None)
         (directory/'output.json').write_text(json.dumps(parsed,ensure_ascii=False))
         if stage=='contract_review':job['contract_candidate']={'proposal':parsed,'hash':g.digest(parsed),'asset':directory.name}
         elif stage=='contract_check':job['contract_decision']={'result':parsed,'asset':directory.name}
@@ -110,11 +166,14 @@ def call(job,stage):
             save_candidate(job,'build' if stage=='repair_build' else stage,parsed,directory)
         else:job.setdefault('diagnoses',[]).append(parsed)
         if stage=='evaluation':
+            if lean.enabled(job):job.pop('demand_test_repair',None)
             job.pop('evaluation_candidate',None)
             if job.get('coverage_repair'):
                 job.setdefault('coverage_repairs',[]).append({**job.pop('coverage_repair'),'status':'completed','output_hash':g.digest(parsed)})
         job.pop('active_action',None);job.pop('format_error',None)
         if stage=='project_build':job.pop('format_correction',None)
+        if (job.get('stage_correction') or {}).get('stage')==stage:job.pop('stage_correction',None)
+        if output_retry:job.pop('output_recovery',None)
         g.put(job)
         return parsed
     except Exception as exc:
@@ -128,9 +187,13 @@ def call(job,stage):
         if fmt.classify(exc):reason=fmt.classify(exc)
         if getattr(exc,'category',None) in ('coverage_incomplete','spec_patch_invalid'):reason={'category':exc.category,'reason':str(exc),'validation_feedback':exc.feedback}
         audit['failure_kind']=(reason['category'] if isinstance(exc,agent.ModelFailure) else reason['category'] if isinstance(exc,(json.JSONDecodeError,ValidationError)) else 'diagnosis_rejected' if stage=='diagnosis' else 'patch_rejected' if job.get('evaluation_repair') or stage=='repair_build' else 'asset_invalid')
+        if isinstance(exc,(ff.Invalid,ff.recovery.Revision)):reason={'category':exc.category,'reason':str(exc),'validation_feedback':exc.feedback}
+        if isinstance(exc,(ff.Invalid,ff.recovery.Revision)):audit['failure_kind']=exc.category
         if getattr(exc,'category',None)=='specification_conflict':reason={'category':exc.category,'reason':str(exc)}
         if reason['category'] in ('coverage_incomplete','spec_patch_invalid','specification_conflict'):audit['failure_kind']=reason['category']
+        if output_retry and reason['category']!='output_limit':job.pop('output_recovery',None)
         audit.update(status='outcome_unknown' if reason['category'] in ('timeout','cancelled') else 'failed',finished=time.time(),metadata=meta,error=reason)
+        if stage=='spec_review':inventory.rejected(job,inventory_candidate,directory,reason)
         job.pop('active_action',None)
         try:
             if not patching:fmt.rejected(job,stage,exc,directory.name)
@@ -143,6 +206,7 @@ def failure(job,stage,exc):
     if fmt.classify(exc):reason=fmt.classify(exc)
     if isinstance(exc,(direct.ReviewEvidenceError,EvidenceResponseError)):reason['validation_feedback']=exc.feedback
     if getattr(exc,'category',None) in ('coverage_incomplete','spec_patch_invalid'):reason={'category':exc.category,'reason':str(exc),'validation_feedback':exc.feedback}
+    if isinstance(exc,(ff.Invalid,ff.recovery.Revision)):reason={'category':exc.category,'reason':str(exc),'validation_feedback':exc.feedback}
     item={'id':s.ident(),'stage':stage,'time':time.time(),'contract_version':job['contract_version'],'matrix_id':(job.get('matrix') or {}).get('id'),'error':reason}
     job.setdefault('failure_history',[]).append(item);job['error']=reason
     # Schema errors may echo private values: keep them only in that same role's context.
@@ -152,6 +216,7 @@ def failure(job,stage,exc):
 
 
 def next_after_asset(job):
+    if ff.enabled(job):return ff.next_checkpoint(job)
     if direct.enabled(job):
         if 'project_build' not in job['assets']:return 'project_build'
         if (job.get('spec_approval') or {}).get('contract_hash')!=job.get('contract_hash'):return 'spec_review'
@@ -296,6 +361,7 @@ def run(id,start):
 
 
 def resume(id,note=''):
+    if ff.enabled(g.get(id)):return ff.resume(id,note)
     job=g.get(id)
     if job['status'] not in ('interrupted','waiting_environment','waiting_provider','awaiting_contract_review','no_progress','needs_manual_review'):raise ValueError('当前状态需要明确创建新预算批次')
     if job['status']=='needs_manual_review' and len(note.strip())<10:raise ValueError('请先在作者审核中核对冲突并提供新的依据，不能原样恢复自动循环')
@@ -371,10 +437,25 @@ def regenerate(id,body):
         child['inherited_failure']=source.get('error');child['inherited_matrix_id']=(source.get('matrix') or {}).get('id')
         # Copy immutable selected assets, never edit parent directories/records.
         import shutil
-        child['handoff_version']=handoff.VERSION
+        if not ff.enabled(child):child['handoff_version']=handoff.VERSION
+        else:child.pop('handoff_version',None)
+        # Explicit new-budget authorization resets local retry limits; never
+        # reset these counters on process restart or an ordinary resume.
+        if ff.obligations.enabled(child):child.pop('fault_recovery',None)
+        if child.get('inventory_correction_version'):
+            child['inventory_correction_calls']=0
+        child.pop('stage_corrections',None)
+        child.pop('stage_correction',None)
+        child.pop('standard_rejections',None)
+        for key in ('correction_work_items','spec_patch_work_items','public_spec_recovery',
+                    'output_recoveries','output_recovery','lean_repairs'):
+            child.pop(key,None)  # Explicit new batch only; ordinary resume retains limits.
         refs=set(child['assets'].values())|set(child.get('candidate_assets',{}).values())
+        if child.get('inventory_correction'):refs.add(child['inventory_correction']['asset'])
         if child.get('format_correction'):refs.add(child['format_correction']['asset']);child['format_correction']['attempts']=0
         if child.get('evaluation_candidate'):refs.add(child['evaluation_candidate']['asset'])
+        if child.get('standard_candidate'):refs.add(child['standard_candidate']['asset'])
+        if child.get('standard_rejection'):refs.add(child['standard_rejection']['candidate_asset'])
         refs.update(child[k]['asset'] for k in ('contract_candidate','contract_decision') if child.get(k))
         for ref in refs:shutil.copytree(g.root(source)/ref,g.root(child)/ref)
         if child.get('contract') and child.get('confirmed_version')==child.get('contract_version'):
@@ -382,6 +463,7 @@ def regenerate(id,body):
         else:start='design' if not child.get('contract') else None
         if direct.enabled(child):
             start=source['checkpoint'] if source.get('checkpoint') in ('project_build','spec_review') else ('diagnosis' if child.get('matrix') and not child['matrix'].get('passed') else next_after_asset(child))
+        if ff.enabled(child):start=source.get('checkpoint') or ff.next_checkpoint(child)
         child['checkpoint']=start or 'build';child['status']='interrupted' if start else 'awaiting_contract'
         with s.connect() as db:
             db.execute('INSERT INTO objects VALUES (?,?,?,?)',('generation',child_id,None,json.dumps(child,ensure_ascii=False)))

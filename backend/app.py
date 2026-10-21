@@ -156,7 +156,7 @@ class Publish(Strict):
 def generation_jobs():return [g.public(j) for j in s.all_objects('generation') if not j.get('deleted_at')]
 
 @app.post('/api/generation/jobs')
-def generation_create(body:GenerationRequest):return g.public(g.create(body,direct_build=True,handoff=True,fault_model=True))
+def generation_create(body:GenerationRequest):return g.public(g.create(body,direct_build=True,fault_first=True,lean=True))
 
 @app.get('/api/generation/jobs/{id}')
 def generation_job(id:str):

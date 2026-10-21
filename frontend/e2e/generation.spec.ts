@@ -1,3 +1,4 @@
+import {fillDiagnosis,expectDiagnosis} from './diagnosis';
 import {test,expect} from '@playwright/test';
 
 test('三个主导航深链接、返回与草稿隔离',async({page,request})=>{
@@ -13,14 +14,14 @@ test('三个主导航深链接、返回与草稿隔离',async({page,request})=>{
  await page.getByRole('link',{name:'题库',exact:true}).click();
  await page.getByRole('button',{name:'开始训练 ↗'}).first().click();
  await expect(page).toHaveURL(/\/training\/[a-f0-9]{32}$/);
- const id=await page.evaluate(()=>localStorage.getItem('session'));
- await page.getByLabel('诊断说明').fill('导航切换保留本会话草稿');
+ const id=page.url().split('/').pop();
+ await fillDiagnosis(page,'导航切换保留本会话草稿');
  await page.getByRole('link',{name:'故障题目生成',exact:true}).click();
  await expect(page.getByLabel('训练需求')).toHaveValue('研究上下文压缩后关键约束丢失的工程机制');
- await page.goBack();await expect(page.getByLabel('诊断说明')).toHaveValue('导航切换保留本会话草稿');
+ await page.goBack();await expectDiagnosis(page,'导航切换保留本会话草稿');
  const other=await (await request.post('/api/sessions',{data:{task_id:'retry'}})).json();
- await page.goto('/training/'+other.id);await expect(page.getByLabel('诊断说明')).toHaveValue('');
- await page.goto('/training/'+id);await expect(page.getByLabel('诊断说明')).toHaveValue('导航切换保留本会话草稿');
+ await page.goto('/training/'+other.id);await expectDiagnosis(page,'');
+ await page.goto('/training/'+id);await expectDiagnosis(page,'导航切换保留本会话草稿');
  await page.setViewportSize({width:390,height:844});
  for(const name of ['故障题目生成','题库','个人工程项目训练'])await expect(page.getByRole('link',{name,exact:true})).toBeInViewport();
 });
@@ -39,6 +40,9 @@ test('生成审核发布及 Docker 训练报告闭环（明确 MOCK）',async({p
  expect((await (await request.get('/api/tasks')).json()).some((t:any)=>t.id==='gen_'+id)).toBe(false);
  await page.goto('/generate/'+id);
  await expect(page.locator('.generation strong[role=status]')).toHaveText('等待作者审核',{timeout:100000});
+ await expect(page.getByLabel('故障优先进度')).toContainText('故障验收 已通过 · 修复验收 已通过');
+ await expect(page.getByRole('heading',{name:'原需求覆盖复查',exact:true})).toBeVisible();
+ await expect(page.getByText('模型对照原始需求检查测试场景；执行是否通过以 Docker 结果为准，不代表全面覆盖。', {exact:true})).toBeVisible();
  await page.getByRole('button',{name:'打开私有资产审核'}).click();
  await expect(page).toHaveURL(`/generate/${id}/review`);
  await page.getByRole('button',{name:'提示与范围',exact:true}).click();
@@ -54,6 +58,15 @@ test('生成审核发布及 Docker 训练报告闭环（明确 MOCK）',async({p
  expect(job.attempts.filter((a:any)=>['spec_review','evaluation','fingerprint'].includes(a.stage)).every((a:any)=>a.role_id==='evaluator')).toBe(true);
  expect(job.attempts.find((a:any)=>a.stage==='project_build').role_id).toBe('builder');
  const review=await (await request.get('/api/author/generation/'+id)).json();
+ expect(review.job.fault_first_version).toBe('fault-first-v1');
+ expect(review.job.fault_impact_version).toBe('case-impact-v1');
+ expect(review.assets.fingerprint.case_impacts).toHaveLength(review.assets.evaluation.cases.length);
+ expect(job.matrix.gates.fault_preserved_fields).toBe(true);
+ expect(job.matrix.gates.fault_behavior).toBe(true);
+ expect(review.assets.fault_acceptance.passed).toBe(true);expect(review.assets.fault_acceptance.complete).toBe(true);
+ expect(review.assets.fix_acceptance.passed).toBe(true);expect(review.assets.fix_patch.base_hash).toBe(review.assets.fault_acceptance.build_hash);
+ expect(review.assets.build.normal).toEqual(review.assets.build.reference);
+ expect(review.assets.build.faulty).toEqual(review.assets.project_build.faulty);
  expect(job.matrix.fault_checks).toBeUndefined();
  expect(review.assets.fingerprint.checks.length).toBeGreaterThan(0);
  expect(job.project_flow).toBe('direct-build-v1');
@@ -73,7 +86,7 @@ test('生成审核发布及 Docker 训练报告闭环（明确 MOCK）',async({p
   await page.evaluate(text=>navigator.clipboard.writeText(text),String(code));
   await page.locator('.monaco-editor textarea').first().focus();await page.keyboard.press('ControlOrMeta+A');await page.keyboard.press('ControlOrMeta+V');
  }
- await page.getByLabel('诊断说明').fill('所有整数都应参与累加，核对空列表与多个元素。');
+ await fillDiagnosis(page,'所有整数都应参与累加，核对空列表与多个元素。');
  await page.getByRole('button',{name:'保存并运行公开测试'}).click();
  await expect(page.locator('.run').first().locator('.runhead .status')).toHaveText('通过',{timeout:60000});
  await page.getByRole('button',{name:'保存并提交评测'}).click();
@@ -107,7 +120,7 @@ test('自动诊断修复、预算耗尽和明确授权新批次（MOCK，实际D
  const {execFileSync}=await import('node:child_process');
  const path=await import('node:path');
  const root=path.resolve(process.cwd(),'..');
- const parent=execFileSync(path.join(root,'.venv/bin/python'),['-m','scripts.seed_roles_browser_fixture'],{cwd:root,env:{...process.env,AGENT_MODE:'mock',AGENTLAB_DATA:'/tmp/agentlab-playwright'},encoding:'utf8'}).trim();
+ const parent=execFileSync(path.join(root,'.venv/bin/python'),['-m','scripts.seed_roles_browser_fixture'],{cwd:root,env:{...process.env,AGENT_MODE:'mock',AGENTLAB_DATA:process.env.AGENTLAB_E2E_DATA||'/tmp/agentlab-playwright'},encoding:'utf8'}).trim();
  await page.goto('/generate/'+parent);
  await expect(page.locator('strong[role=status]')).toHaveText('本批预算耗尽');
  async function newBatch(count:number){
@@ -143,7 +156,7 @@ test('需求澄清、局部契约版本、重新验证和刷新（MOCK，实际D
  test.skip(!health.docker_available,'Docker unavailable; no host fallback');expect(health.agent_mode).toBe('mock');
  const {execFileSync}=await import('node:child_process');const path=await import('node:path');
  const root=path.resolve(process.cwd(),'..');
- const id=execFileSync(path.join(root,'.venv/bin/python'),['-m','scripts.seed_contract_browser_fixture'],{cwd:root,env:{...process.env,AGENT_MODE:'mock',AGENTLAB_DATA:'/tmp/agentlab-playwright'},encoding:'utf8'}).trim();
+ const id=execFileSync(path.join(root,'.venv/bin/python'),['-m','scripts.seed_contract_browser_fixture'],{cwd:root,env:{...process.env,AGENT_MODE:'mock',AGENTLAB_DATA:process.env.AGENTLAB_E2E_DATA||'/tmp/agentlab-playwright'},encoding:'utf8'}).trim();
  const before=await (await request.get('/api/generation/jobs/'+id)).json();
  await page.goto('/generate/'+id);
  await page.getByRole('button',{name:'从检查点继续',exact:true}).click();
@@ -175,7 +188,7 @@ test('回退后成本展示与作者摘要（MOCK，实际Docker）',async({page
  const health=await (await request.get('/api/health')).json();test.skip(!health.docker_available,'Docker 不可用，禁止宿主降级');
  const {execFileSync}=await import('node:child_process');
  const path=await import('node:path');const root=path.resolve(process.cwd(),'..');
- const id=execFileSync(path.join(root,'.venv/bin/python'),['-m','scripts.seed_reliability_browser_fixture'],{cwd:root,env:{...process.env,AGENT_MODE:'mock',AGENTLAB_DATA:'/tmp/agentlab-playwright'},encoding:'utf8'}).trim();
+ const id=execFileSync(path.join(root,'.venv/bin/python'),['-m','scripts.seed_reliability_browser_fixture'],{cwd:root,env:{...process.env,AGENT_MODE:'mock',AGENTLAB_DATA:process.env.AGENTLAB_E2E_DATA||'/tmp/agentlab-playwright'},encoding:'utf8'}).trim();
  await page.goto('/generate/'+id);
  await expect(page.getByRole('status')).toContainText('失败');
  await expect(page.getByLabel('修复进展与实际用量')).toContainText('不再按无进展提前终止');

@@ -1,0 +1,345 @@
+{
+  "source_job": "15a148e703024c5694215747e143d2a5",
+  "request": {
+    "requirement": "Agent 启动时后端未就绪，导致空工具注册",
+    "minutes": 20,
+    "difficulty": "",
+    "preference": ""
+  },
+  "assets": {
+    "project_build": {
+      "assessment": "generatable",
+      "rationale": "需求描述了一个可复现的启动时序故障：Agent 在启动时后端尚未就绪，导致工具注册为空。可在纯标准库、无网络的单容器场景中模拟后端就绪探测与工具注册流程，并保留正常就绪时注册成功的场景。",
+      "questions": [],
+      "contract": {
+        "title": "Agent 启动时后端未就绪导致空工具注册",
+        "scenario": "实现一个 Agent 启动流程：启动时探测后端就绪状态，若后端已就绪则从后端获取工具清单并完成注册；若后端未就绪，则启动流程仍应完成，但工具注册结果为空。场景输入提供后端就绪状态、后端返回的工具清单以及启动探测参数。输出启动结果、注册工具列表和注册数量。",
+        "symptom": "当后端在启动时未就绪，Agent 启动完成后注册工具列表为空，注册数量为 0；即使后端随后可用，本次启动也不会注册任何工具。",
+        "capabilities": [
+          "模拟后端就绪探测",
+          "根据就绪状态决定是否拉取工具清单",
+          "完成工具注册并输出注册结果",
+          "区分启动完成与注册成功"
+        ],
+        "minutes": 20,
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "backend_ready": {
+              "type": "boolean",
+              "description": "启动探测时后端是否已就绪"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "后端就绪时返回的工具名称列表"
+            },
+            "probe_timeout_ms": {
+              "type": "integer",
+              "description": "启动探测超时时间，单位毫秒"
+            },
+            "retry_on_not_ready": {
+              "type": "boolean",
+              "description": "后端未就绪时是否在启动阶段重试探测"
+            }
+          },
+          "required": [
+            "backend_ready",
+            "tools"
+          ],
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "startup_completed": {
+              "type": "boolean",
+              "description": "启动流程是否完成"
+            },
+            "registered_tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "本次启动实际注册的工具名称列表"
+            },
+            "registered_count": {
+              "type": "integer",
+              "description": "本次启动实际注册的工具数量"
+            },
+            "backend_ready_at_startup": {
+              "type": "boolean",
+              "description": "启动探测时后端是否就绪"
+            }
+          },
+          "required": [
+            "startup_completed",
+            "registered_tools",
+            "registered_count",
+            "backend_ready_at_startup"
+          ],
+          "additionalProperties": false
+        },
+        "behaviors": {
+          "startup_completes": "无论后端是否就绪，启动流程都应正常完成并返回结果",
+          "register_when_ready": "后端就绪时，应拉取工具清单并注册全部工具",
+          "empty_when_not_ready": "后端未就绪时，本次启动不注册任何工具，注册列表为空",
+          "count_matches_list": "registered_count 必须等于 registered_tools 的长度"
+        },
+        "constraints": [
+          "只使用 Python 标准库，不访问网络",
+          "每次 scenario 独立运行，不依赖外部服务",
+          "后端就绪状态由输入决定，不进行真实网络探测",
+          "启动流程不得抛出异常或超时"
+        ],
+        "input_domain": "backend_ready 为布尔值；tools 为字符串数组，长度 0 到 20，元素长度 1 到 50；probe_timeout_ms 为 100 到 5000 的整数，默认 1000；retry_on_not_ready 为布尔值，默认 false。",
+        "exclusions": [
+          "不实现真实后端服务或网络通信",
+          "不实现工具的实际调用逻辑",
+          "不处理启动后的动态工具注册",
+          "不处理认证、权限或持久化"
+        ],
+        "files": [
+          "app.py",
+          "agent_startup.py",
+          "backend_client.py"
+        ],
+        "simulation": "scenario(data) 读取 backend_ready 与 tools。若 backend_ready 为 true，则 registered_tools 等于 tools，registered_count 等于 tools 长度；若为 false，则 registered_tools 为空列表，registered_count 为 0。startup_completed 始终为 true，backend_ready_at_startup 等于输入的 backend_ready。"
+      },
+      "faulty": {
+        "app.py": "import json\nfrom agent_startup import startup_agent\n\ndef scenario(data):\n    result = startup_agent(data)\n    return result\n\nif __name__ == \"__main__\":\n    print(json.dumps(scenario({\"backend_ready\": False, \"tools\": [\"search\", \"calc\"]})))",
+        "agent_startup.py": "from backend_client import fetch_tools\n\ndef startup_agent(data):\n    backend_ready = bool(data.get(\"backend_ready\", False))\n    tools = data.get(\"tools\", [])\n    registered = []\n    if backend_ready:\n        registered = fetch_tools(tools)\n    return {\n        \"startup_completed\": True,\n        \"registered_tools\": registered,\n        \"registered_count\": len(registered),\n        \"backend_ready_at_startup\": backend_ready,\n    }",
+        "backend_client.py": "def fetch_tools(tools):\n    return list(tools)"
+      },
+      "private_fault_requirements": "主要故障：当 backend_ready 为 false 时，startup_agent 直接跳过工具注册，导致 registered_tools 为空、registered_count 为 0。必须保留 backend_ready 为 true 时正常注册全部工具的场景。故障仅体现在启动时后端未就绪这一路径，不引入异常、超时或语法错误。",
+      "symptom_paths": [
+        [
+          "registered_tools"
+        ],
+        [
+          "registered_count"
+        ]
+      ]
+    },
+    "evaluation": {
+      "cases": [
+        {
+          "id": "ready_registers_all_tools",
+          "group": "target",
+          "visibility": "public",
+          "covers": [
+            "startup_completes",
+            "register_when_ready",
+            "count_matches_list"
+          ],
+          "input": {
+            "backend_ready": true,
+            "tools": [
+              "search",
+              "calc",
+              "weather"
+            ],
+            "probe_timeout_ms": 1000,
+            "retry_on_not_ready": false
+          },
+          "expected": {
+            "startup_completed": true,
+            "registered_tools": [
+              "search",
+              "calc",
+              "weather"
+            ],
+            "registered_count": 3,
+            "backend_ready_at_startup": true
+          },
+          "faulty_expected": null,
+          "classification_reason": "针对主要故障的就绪分支：后端就绪时必须拉取并注册全部工具，计数等于列表长度，启动完成。若实现错误地在就绪时也返回空注册，此用例会失败。"
+        },
+        {
+          "id": "not_ready_empty_registration",
+          "group": "target",
+          "visibility": "public",
+          "covers": [
+            "startup_completes",
+            "empty_when_not_ready",
+            "count_matches_list"
+          ],
+          "input": {
+            "backend_ready": false,
+            "tools": [
+              "search",
+              "calc"
+            ],
+            "probe_timeout_ms": 1000,
+            "retry_on_not_ready": false
+          },
+          "expected": {
+            "startup_completed": true,
+            "registered_tools": [],
+            "registered_count": 0,
+            "backend_ready_at_startup": false
+          },
+          "faulty_expected": null,
+          "classification_reason": "针对主要故障的未就绪分支：后端未就绪时本次启动不注册任何工具，列表为空且计数为 0，但启动仍完成。这是症状核心场景。"
+        },
+        {
+          "id": "not_ready_with_retry_still_empty",
+          "group": "target",
+          "visibility": "hidden",
+          "covers": [
+            "startup_completes",
+            "empty_when_not_ready",
+            "count_matches_list"
+          ],
+          "input": {
+            "backend_ready": false,
+            "tools": [
+              "a",
+              "b",
+              "c",
+              "d"
+            ],
+            "probe_timeout_ms": 500,
+            "retry_on_not_ready": true
+          },
+          "expected": {
+            "startup_completed": true,
+            "registered_tools": [],
+            "registered_count": 0,
+            "backend_ready_at_startup": false
+          },
+          "faulty_expected": null,
+          "classification_reason": "隐藏目标用例：即使开启启动阶段重试，后端仍未就绪时本次启动也不注册工具，列表为空、计数为 0，启动完成。覆盖重试参数不影响未就绪空注册的行为。"
+        },
+        {
+          "id": "ready_empty_tool_list",
+          "group": "regression",
+          "visibility": "public",
+          "covers": [
+            "startup_completes",
+            "register_when_ready",
+            "count_matches_list"
+          ],
+          "input": {
+            "backend_ready": true,
+            "tools": [],
+            "probe_timeout_ms": 2000,
+            "retry_on_not_ready": false
+          },
+          "expected": {
+            "startup_completed": true,
+            "registered_tools": [],
+            "registered_count": 0,
+            "backend_ready_at_startup": true
+          },
+          "faulty_expected": null,
+          "classification_reason": "保留行为：后端就绪但工具清单为空时，注册列表为空、计数为 0，且 backend_ready_at_startup 为 true。此场景不触发未就绪分支的主要故障，验证就绪标志与空清单的正确组合。"
+        },
+        {
+          "id": "ready_single_tool_defaults",
+          "group": "regression",
+          "visibility": "hidden",
+          "covers": [
+            "startup_completes",
+            "register_when_ready",
+            "count_matches_list"
+          ],
+          "input": {
+            "backend_ready": true,
+            "tools": [
+              "only_tool"
+            ]
+          },
+          "expected": {
+            "startup_completed": true,
+            "registered_tools": [
+              "only_tool"
+            ],
+            "registered_count": 1,
+            "backend_ready_at_startup": true
+          },
+          "faulty_expected": null,
+          "classification_reason": "保留行为：省略可选参数时使用默认值，后端就绪时注册单个工具，计数为 1，启动完成。验证默认参数下就绪注册路径不受未就绪故障影响。"
+        }
+      ],
+      "evasion_checks": [
+        "检查实现是否在 backend_ready 为 false 时仍返回非空 registered_tools 或非零 registered_count（例如错误地忽略就绪状态直接注册）。",
+        "检查实现是否在 backend_ready 为 true 时错误返回空注册列表（例如把未就绪分支逻辑误用于就绪分支）。",
+        "检查 registered_count 是否始终等于 registered_tools 的长度，而非硬编码为 0 或与列表不一致。",
+        "检查 startup_completed 是否在两种分支下都为 true，而非在未就绪时返回 false 或抛出异常。",
+        "检查 backend_ready_at_startup 是否严格等于输入的 backend_ready，而非固定值。"
+      ]
+    },
+    "fingerprint": {
+      "checks": [
+        {
+          "case_id": "ready_registers_all_tools",
+          "design_quote": "主要故障：当 backend_ready 为 false 时，startup_agent 直接跳过工具注册，导致 registered_tools 为空、registered_count 为 0。必须保留 backend_ready 为 true 时正常注册全部工具的场景。故障仅体现在启动时后端未就绪这一路径，不引入异常、超时或语法错误。",
+          "reason": "后端就绪时，正确行为应拉取并注册全部工具；若实现错误地在就绪分支也返回空注册，则注册列表与计数会偏离正确期望。",
+          "assertions": [
+            {
+              "path": [
+                "registered_tools"
+              ],
+              "equals": []
+            },
+            {
+              "path": [
+                "registered_count"
+              ],
+              "equals": 0
+            }
+          ]
+        },
+        {
+          "case_id": "not_ready_empty_registration",
+          "design_quote": "主要故障：当 backend_ready 为 false 时，startup_agent 直接跳过工具注册，导致 registered_tools 为空、registered_count 为 0。必须保留 backend_ready 为 true 时正常注册全部工具的场景。故障仅体现在启动时后端未就绪这一路径，不引入异常、超时或语法错误。",
+          "reason": "后端未就绪时，正确行为是本次启动不注册任何工具，列表为空且计数为 0；若实现错误地注册了工具，则列表与计数会偏离正确期望。",
+          "assertions": [
+            {
+              "path": [
+                "registered_tools"
+              ],
+              "equals": [
+                "search",
+                "calc"
+              ]
+            },
+            {
+              "path": [
+                "registered_count"
+              ],
+              "equals": 2
+            }
+          ]
+        },
+        {
+          "case_id": "not_ready_with_retry_still_empty",
+          "design_quote": "主要故障：当 backend_ready 为 false 时，startup_agent 直接跳过工具注册，导致 registered_tools 为空、registered_count 为 0。必须保留 backend_ready 为 true 时正常注册全部工具的场景。故障仅体现在启动时后端未就绪这一路径，不引入异常、超时或语法错误。",
+          "reason": "隐藏用例中后端未就绪且开启重试，正确行为仍是不注册任何工具；若实现错误地注册了工具，则列表与计数会偏离正确期望。",
+          "assertions": [
+            {
+              "path": [
+                "registered_tools"
+              ],
+              "equals": [
+                "a",
+                "b",
+                "c",
+                "d"
+              ]
+            },
+            {
+              "path": [
+                "registered_count"
+              ],
+              "equals": 4
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

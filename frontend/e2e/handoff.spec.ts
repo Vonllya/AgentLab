@@ -1,5 +1,21 @@
 import {test,expect} from '@playwright/test';
 
+test('逐场景复核停止与明确新预算（离线展示夹具）',async({page})=>{
+ const id='9'.repeat(32);let posts=0;
+ await page.route('**/api/generation/jobs/'+id,route=>route.fulfill({json:{id,request:{requirement:'MOCK 复核停止展示，不代表真实模型生成'},status:'no_progress',stage:'fault_review',checkpoint:'fault_review',mode:'mock',policy_version:'roles-v1',fault_first_version:'fault-first-v1',fault_impact_version:'case-impact-v1',contract_version:1,request_count:3,budget:{policy:{requests:24},requests:3},attempts:[{role:'评测 Agent · 要求与失败复核',stage:'fault_review',status:'failed',failure_kind:'candidate_no_progress',attempt:1}],error:{category:'candidate_no_progress',reason:'复核后仍无有效候选，具体要求和执行已经保留'}}}));
+ page.on('request',r=>{if(r.method()==='POST')posts++});
+ await page.goto('/generate/'+id);
+ await expect(page.locator('strong[role=status]')).toHaveText('无有效进展，已停止重复调用');
+ await expect(page.getByRole('alert')).toContainText('复核后仍无有效候选');
+ await page.getByText('阶段执行记录（1）',{exact:true}).click();
+ await expect(page.getByText('候选未产生有效修改',{exact:false})).toBeVisible();
+ await page.getByRole('button',{name:'从检查点继续',exact:true}).click();
+ await expect(page.getByLabel('创建关联旧记录的新预算批次')).toBeChecked();
+ await expect(page.getByRole('button',{name:'确认新预算并重新生成'})).toBeDisabled();
+ await page.reload();await expect(page.locator('strong[role=status]')).toHaveText('无有效进展，已停止重复调用');
+ expect(posts).toBe(0);
+});
+
 test('工单冲突停止、作者证据及刷新恢复（离线接口夹具）',async({page})=>{
  const id='b'.repeat(32);
  const job={id,request:{requirement:'MOCK 工单冲突展示夹具，不代表真实生成'},status:'needs_manual_review',stage:'diagnosis',checkpoint:'diagnosis',mode:'mock',policy_version:'roles-v1',handoff_version:'repair-handoff-v1',request_count:4,attempts:[],contract_version:0,error:{category:'handoff_conflict',reason:'相同证据下再次出现冲突，已停止自动纠错'},budget:{policy:{requests:24},requests:4}};
@@ -10,11 +26,12 @@ test('工单冲突停止、作者证据及刷新恢复（离线接口夹具）',
  await page.goto('/generate/'+id);
  await expect(page.getByRole('status').filter({hasText:'交接冲突待人工复核'})).toBeVisible();
  await page.getByRole('button',{name:'打开私有资产审核'}).click();
- await expect(page.getByText('自动纠错已停止。请核对冲突双方和已有证据；恢复前需要提供新的依据，不会自动重发模型请求。')).toBeVisible();
+ await expect(page).toHaveURL('/generate/'+id+'/review');
+ await page.getByRole('button',{name:'故障与修复',exact:true}).click();
  await page.getByText('冲突 '+ 'c'.repeat(12)+' · constraint_conflict',{exact:true}).click();
  await expect(page.getByText('同一输入不能同时包含与缺少相同诊断标记。',{exact:true})).toBeVisible();
  await expect(page.getByRole('button',{name:'审核通过并发布'})).toBeDisabled();
- await page.reload();await expect(page.getByRole('status').filter({hasText:'交接冲突待人工复核'})).toBeVisible();
+ await page.reload();await expect(page.getByRole('button',{name:'审核通过并发布'})).toBeDisabled();
  expect(posts).toBe(0);
 });
 
@@ -30,7 +47,7 @@ test('证据暂停分类和作者补充记录（离线夹具）',async({page})=>
  await page.route('**/api/generation/jobs/'+id,route=>route.fulfill({json:{id,request:{requirement:'MOCK 证据补充'},status:'needs_manual_review',stage:'diagnosis',mode:'mock',policy_version:'roles-v1',contract_version:0,attempts:[],error:{category:'evidence_repeated',reason:'已经提供相关证据，重复请求已停止'}}}));
  await page.route('**/api/author/generation/'+id,route=>route.fulfill({json:{diagnostic_evidence:[{id:'evidence-12345678',binding:{matrix_id:'matrix-current',build_hash:'snapshot-fixed'},status:'completed',results:[{request:{kind:'file',question:'读取故障入口'},status:'available',trust:'代码不是通过证明',code:'<script>alert(1)</script>'}]}]}}));
  await page.goto('/generate/'+id);await expect(page.getByRole('status').filter({hasText:'诊断证据待复核'})).toBeVisible();
- await page.getByRole('button',{name:'打开私有资产审核'}).click();await page.getByText('补充证据 evidence-123 · completed',{exact:false}).click();
+ await page.getByRole('button',{name:'打开私有资产审核'}).click();await page.getByRole('button',{name:'故障与修复',exact:true}).click();await page.getByText('补充证据 evidence-123 · completed',{exact:false}).click();
  await expect(page.getByText('代码不是通过证明',{exact:true})).toBeVisible();await page.getByText('证据详情',{exact:true}).click();
  await expect(page.getByText('<script>alert(1)</script>',{exact:false})).toBeVisible();
 });

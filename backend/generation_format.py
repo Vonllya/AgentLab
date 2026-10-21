@@ -8,6 +8,10 @@ def classify(exc):
         return {'category':'json_syntax','reason':f'JSON语法错误：行{exc.lineno} 列{exc.colno}：{exc.msg}',
                 'details':[{'path':'$','position':exc.pos,'near':exc.doc[max(0,exc.pos-100):exc.pos+100]}]}
     if isinstance(exc,ValidationError):
+        for error in exc.errors(include_url=False):
+            cause=error.get('ctx',{}).get('error')
+            if getattr(cause,'category',None)=='path_protocol_incompatible':
+                return {'category':'asset_constraint','reason':str(cause),'validation_feedback':cause.feedback}
         errors=exc.errors(include_url=False,include_context=False)
         actual_types=[type(e.get('input')).__name__ for e in errors]
         structural=all(e['type'] not in ('value_error','assertion_error') for e in errors)

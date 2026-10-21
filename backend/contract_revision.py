@@ -12,6 +12,20 @@ DEFAULTS={
     'single_fault':'每题一个主要故障；不访问真实支付、云资源或外部业务接口。',
 }
 
+
+def published_defaults(job):
+    values = dict(DEFAULTS)
+    from .generation_stage_recovery import enabled
+    if enabled(job):
+        values['version_semantics'] = (
+            '平台生成同一任务的不同代码版本，而不是要求一个版本同时满足正确与错误输出。'
+            '公开契约的 behaviors、input_schema、output_schema 定义正常版与参考修复的正确行为；'
+            '故障版在目标场景故意违反正确行为，以稳定复现题面症状，其他场景保留正常行为。'
+            '用户要求复现故障并要求修复后正确，属于不同版本的目标，不构成用户需求矛盾。'
+            '不可把故障版的错误结果写成公开正常验收标准，也无需让用户选择保留故障还是满足正确标准，'
+            '不为此新增输入模式开关。生成规范混入故障预期应修订规范；只有原始业务需求自身有多种合理解释才询问用户。')
+    return values
+
 class Question(Strict):
     id:str=Field(pattern='^[a-z][a-z0-9_]{0,30}$')
     text:str=Field(min_length=10,max_length=600)
@@ -57,7 +71,7 @@ def sources(job):
 
 def context(job,checking=False):
     from . import generation as g
-    value={'contract':job['contract'],'contract_hash':job['contract_hash'],'requirement_sources':sources(job),'published_defaults':DEFAULTS,
+    value={'contract':job['contract'],'contract_hash':job['contract_hash'],'requirement_sources':sources(job),'published_defaults':published_defaults(job),
            'answered_questions':job.get('requirement_answers',[]),'scope':job.get('contract_issue',{'behavior_ids':[]}),
            'rule':'只根据需求与公开约定解释契约；没有代码、测试期望、执行输出或私有诊断可供迎合。'}
     if checking:
@@ -69,7 +83,7 @@ def context(job,checking=False):
 def patched(job,raw):
     proposal=Proposal.model_validate(raw)
     if proposal.contract_hash!=job['contract_hash']:raise ValueError('契约修订依据已过期')
-    data=copy.deepcopy(job['contract']);seen=[];evidence={**sources(job),**{'default.'+k:v for k,v in DEFAULTS.items()}}
+    data=copy.deepcopy(job['contract']);seen=[];evidence={**sources(job),**{'default.'+k:v for k,v in published_defaults(job).items()}}
     allowed={'title','scenario','symptom','input_domain','simulation','behaviors','constraints','exclusions','input_schema','output_schema'}
     for change in proposal.changes:
         path=change.path

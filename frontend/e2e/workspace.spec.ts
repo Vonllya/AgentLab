@@ -1,14 +1,16 @@
+import {fillDiagnosis,expectDiagnosis} from './diagnosis';
 import {test,expect} from '@playwright/test';
 test('创建、编辑草稿、保存、提示、mock 对话、刷新恢复',async({page})=>{
  await page.goto('/library');
  await expect(page.getByText('MOCK · 确定性辅导')).toBeVisible();
  await page.getByRole('button',{name:'开始训练 ↗'}).first().click();
  await expect(page.getByRole('tab',{name:/任务说明\.md/})).toBeVisible();
+ await page.getByRole('button',{name:'打开文件 solution.py',exact:true}).click();
  const editor=page.locator('.monaco-editor textarea').first();await editor.focus();await page.keyboard.press('ControlOrMeta+End');await page.keyboard.insertText('\n# browser-save-proof');
- await page.getByLabel('诊断说明').fill('根据测试证据定位，继续检查边界。');
+ await fillDiagnosis(page,'根据测试证据定位，继续检查边界。');
  await expect(page.getByText('● 有未保存修改（草稿已本地保留）')).toBeVisible();
  await page.reload();
- await expect(page.getByLabel('诊断说明')).toHaveValue('根据测试证据定位，继续检查边界。');
+ await expectDiagnosis(page,'根据测试证据定位，继续检查边界。');
  await page.getByRole('button',{name:'保存 Ctrl S',exact:true}).click();
  await expect(page.getByText('✓ 已保存',{exact:true})).toBeVisible();
  await expect(page.locator('.view-lines')).toContainText('# browser-save-proof');
@@ -19,7 +21,7 @@ test('创建、编辑草稿、保存、提示、mock 对话、刷新恢复',asyn
  await expect(page.getByText(/【Mock 确定性模式】/)).toBeVisible();
  await page.reload();
  await expect(page.getByText(/提示 1\/3：/)).toBeVisible();
- await expect(page.getByLabel('诊断说明')).toHaveValue('根据测试证据定位，继续检查边界。');
+ await expectDiagnosis(page,'根据测试证据定位，继续检查边界。');
  await page.getByRole('button',{name:'请求提示 · 2/3'}).click();
  await expect(page.getByText(/提示 2\/3：/)).toBeVisible();
  await page.getByRole('button',{name:'请求提示 · 3/3'}).click();
@@ -33,16 +35,17 @@ test('真实 Docker 提交报告闭环',async({page,request},testInfo)=>{
  await page.goto('/library');
  await page.locator('.cards article').filter({has:page.getByRole('heading',{name:'RAG 重排后的引用错位'})}).getByRole('button',{name:'开始训练 ↗'}).click();
  await expect(page.getByRole('tab',{name:/任务说明\.md/})).toBeVisible();
- const sessionId=await page.evaluate(()=>localStorage.getItem('session'));
+ const sessionId=page.url().split('/').pop();
  const reference='def answer(documents, order):\n    return [{"text": documents[i]["text"], "citation": documents[i]["id"]} for i in order]\n\ndef scenario(data):\n    return answer(data["documents"], data["order"])\n';
  async function edit(code:string){
+  await page.getByRole('button',{name:'打开文件 solution.py',exact:true}).click();
   await page.context().grantPermissions(['clipboard-read','clipboard-write']);
   await page.evaluate(text=>navigator.clipboard.writeText(text),code);
   await page.locator('.monaco-editor textarea').first().focus();
   await page.keyboard.press('ControlOrMeta+A');await page.keyboard.press('ControlOrMeta+V');
  }
  await edit(reference);
- await page.getByLabel('诊断说明').fill('引用随选中的文档流转；验证重排、过滤与空集。');
+ await fillDiagnosis(page,'引用随选中的文档流转；验证重排、过滤与空集。');
  await page.getByRole('button',{name:'保存 Ctrl S',exact:true}).click();
  await expect(page.getByText('✓ 已保存',{exact:true})).toBeVisible();
  expect((await (await request.get(`/api/sessions/${sessionId}`)).json()).code).toBe(reference);
@@ -97,7 +100,7 @@ test('模型反馈生成中和失败时仍显示客观结果',async({page,reques
  await expect(page.getByText('模型反馈 · 生成中',{exact:true})).toBeVisible();
  await expect(page.locator('.report .runhead .status')).toHaveText('通过');
  status='failed';
- await expect(page.locator('.report [role="alert"]')).toContainText('output_limit',{timeout:10000});
+ await expect(page.locator('.report [role="alert"]')).toContainText('模型输出预算耗尽',{timeout:10000});
  await expect(page.getByText('模型反馈 · 生成失败',{exact:true})).toBeVisible();
  await expect(page.locator('.report .runhead .status')).toHaveText('通过');
 });

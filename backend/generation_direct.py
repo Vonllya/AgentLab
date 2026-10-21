@@ -99,14 +99,23 @@ class ReviewEvidenceError(ValueError):
             '；共'+str(len(errors))+'处。详见同轮validation_feedback，不要重复原提案。')
 
 
-def evidence_sources(contract):
-    return {**{'/behaviors/'+k:v for k,v in contract['behaviors'].items()},
+def evidence_sources(contract, include_schema=False):
+    result = {**{'/behaviors/'+k:v for k,v in contract['behaviors'].items()},
             '/input_domain':contract['input_domain'],'/simulation':contract['simulation'],
             **{'/constraints/'+str(i):v for i,v in enumerate(contract['constraints'])}}
 
+    if include_schema:
+        def visit(node, path):
+            if isinstance(node,dict):
+                if isinstance(node.get('description'),str) and node['description'].strip():result[path+'/description']=node['description']
+                for key,child in node.get('properties',{}).items():visit(child,path+'/properties/'+key.replace('~','~0').replace('/','~1'))
+                if 'items' in node:visit(node['items'],path+'/items')
+        for name in ('input_schema','output_schema'):visit(contract[name],'/'+name)
+    return result
 
-def review_evidence_errors(contract, rules):
-    sources=evidence_sources(contract);errors=[]
+
+def review_evidence_errors(contract, rules, include_schema=False):
+    sources=evidence_sources(contract,include_schema);errors=[]
     for index,rule in enumerate(rules):
         quote=rule['quote']
         if any(quote in text for text in sources.values()):continue
@@ -132,16 +141,34 @@ def review_evidence_errors(contract, rules):
 
 def validate_review(job,raw):
     from . import generation as g
-    result=SpecReview.model_validate(raw).model_dump()
+    from . import generation_demands as demands
+    from . import generation_lean as lean
+    if lean.enabled(job):return lean.validate_spec(job,raw)
+    result=(demands.SpecReview if demands.enabled(job) else SpecReview).model_validate(raw).model_dump()
     if result['contract_hash']!=job['contract_hash']:raise ValueError('规范审查依据已过期')
+    if result['decision']=='revise' and job.get('installed_bundle'):
+        from . import generation_spec_patch as sp, generation_fault_obligations as impacts, generation_fault_model as fm
+        if fm.enabled(job) or impacts.enabled(job):
+            try:sp.targets(job['contract'],result)
+            except sp.PatchError as exc:
+                exc.feedback['contract_hash']=job['contract_hash']
+                raise
     if result['decision']=='approve':
-        if not job.get('contract') or 'build' not in job['assets']:raise ValueError('缺少完整项目，不能批准规范')
+        if demands.enabled(job):
+            try:demands.validate_inventory(job,result['requirements'])
+            except ValueError as exc:
+                if hasattr(exc,'feedback'):exc.feedback['contract_hash']=job['contract_hash']
+                raise
+        from . import generation_fault_first as ff
+        has_project=bool(g.asset(job,'project_build').get('faulty')) if ff.enabled(job) else 'build' in job['assets']
+        if not job.get('contract') or not has_project:raise ValueError('缺少完整项目，不能批准规范')
         paths=output_paths(job['contract']['output_schema'])
         rules=result['output_rules']
         found={r['path'] for r in rules}
         if found!=set(paths):
             raise ValueError('须逐项核对所有输出字段的确定性规则；缺失路径='+json.dumps(sorted(set(paths)-found))+'；未知路径='+json.dumps(sorted(found-set(paths)))+'；path须原样使用output_paths，数组元素为/*；同字段可按分支提供多条规则')
-        errors=review_evidence_errors(job['contract'],rules)
+        from .generation_recovery_policy import enabled as recovery_enabled
+        errors=review_evidence_errors(job['contract'],rules,recovery_enabled(job))
         if errors:raise ReviewEvidenceError(errors,job['contract_hash'])
     return result
 

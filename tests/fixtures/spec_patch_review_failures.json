@@ -1,0 +1,464 @@
+[
+  {
+    "sample": 2,
+    "job_id": "215538e65daf4ad29270f8a860da707e",
+    "asset": "call-bea9f5ae4d3849db9fd2710de30cf882",
+    "input_sha256": "9864b900fdaaf87ff04d86bfe015132cee383af990701d505d3be92b2780f3e6",
+    "contract": {
+      "title": "Resume Batch Workflow Without Duplicate Steps",
+      "scenario": "You are given a batch workflow instance with three fixed steps: prepare, transform, generate. The input supplies an instance_id and an ordered runs array. Each run resumes the instance and may stop immediately after a chosen step's completion record has been persisted, or may run to completion. State lives in local JSON files under the container temp directory and is isolated by instance_id. Multiple runs in one scenario simulate interruption and recovery, including optional storage close/reopen before a run. After all runs, return the ordered completion records and the unique completed steps.",
+      "symptom": "After a run is interrupted following prepare and then resumed, the persisted prepare step is executed again. The returned executions array contains duplicate prepare records (for example, prepare-0001 immediately followed by prepare-0002) before transform, rather than skipping prepare and starting with transform. Similar duplicates occur whenever any completed step is resumed.",
+      "capabilities": [
+        "Local JSON persistence",
+        "Deterministic step record IDs",
+        "Multiple resume operations in one scenario",
+        "Per-instance state isolation",
+        "Storage close/reopen simulation"
+      ],
+      "minutes": 20,
+      "input_schema": {
+        "type": "object",
+        "description": "Scenario input.",
+        "properties": {
+          "instance_id": {
+            "type": "string",
+            "description": "1-64 character identifier; only letters, digits, hyphen, underscore."
+          },
+          "runs": {
+            "type": "array",
+            "description": "1-8 run/resume operations in order.",
+            "items": {
+              "type": "object",
+              "description": "One run operation.",
+              "properties": {
+                "interrupt_after": {
+                  "type": "string",
+                  "enum": [
+                    "prepare",
+                    "transform",
+                    "generate",
+                    "none"
+                  ],
+                  "description": "Run stops immediately after this step's completion record is persisted; 'none' means run through completion."
+                },
+                "reopen": {
+                  "type": "boolean",
+                  "description": "Optional close and reopen persistent storage before this run."
+                }
+              },
+              "required": [
+                "interrupt_after"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "instance_id",
+          "runs"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "description": "Scenario output after all run operations.",
+        "properties": {
+          "instance_id": {
+            "type": "string",
+            "description": "Echoed instance id."
+          },
+          "executions": {
+            "type": "array",
+            "description": "Ordered step completion records.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "step": {
+                  "type": "string",
+                  "enum": [
+                    "prepare",
+                    "transform",
+                    "generate"
+                  ],
+                  "description": "Workflow step that completed."
+                },
+                "record_id": {
+                  "type": "string",
+                  "description": "Deterministic record id: step-NNNN where NNNN is per-instance completion sequence."
+                }
+              },
+              "required": [
+                "step",
+                "record_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "completed_steps": {
+            "type": "array",
+            "description": "Unique completed steps in workflow order.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "prepare",
+                "transform",
+                "generate"
+              ]
+            }
+          }
+        },
+        "required": [
+          "instance_id",
+          "executions",
+          "completed_steps"
+        ],
+        "additionalProperties": false
+      },
+      "behaviors": {
+        "run_to_interrupt": "Executes prepare, transform, generate in order and stops immediately after the selected step's completion record is durably saved.",
+        "resume_skips_completed": "A resumed run skips every step already present in the persisted completed_steps and executes remaining steps in order.",
+        "idempotent_completion": "Once all three steps are complete, further resume runs produce no new execution records.",
+        "instance_isolation": "Records and completed steps are isolated per instance_id; different instances do not share data.",
+        "persistent_reopen": "Step records are loaded from local JSON storage at the start of every run; optional reopen closes and recreates the store over the same root."
+      },
+      "constraints": [
+        "Use only the Python standard library and the container temporary directory.",
+        "No network or external services.",
+        "Do not read configuration, secrets, or arbitrary commands from input.",
+        "No crash injection between write completion and save completion.",
+        "No concurrency or distributed exactly-once requirements.",
+        "Preserve the exact output schema and JSON-compatible return value.",
+        "Input outside the documented domain is outside the test surface."
+      ],
+      "input_domain": "instance_id: non-empty string up to 64 characters using only ASCII letters, digits, '-' and '_'. runs: 1-8 run objects. interrupt_after: one of 'prepare', 'transform', 'generate', or 'none'; 'none' runs through completion. reopen: optional boolean. A valid scenario uses the same instance_id across all runs. Storage is reset per scenario and lives in a fresh temporary directory.",
+      "exclusions": [
+        "No normal/reference implementation.",
+        "No auxiliary diagnostic logs or stdout/stderr output.",
+        "No exceptions, timeouts, or syntax errors used as the fault symptom.",
+        "No external persistence across scenarios.",
+        "No hidden or environment-dependent configuration."
+      ],
+      "files": [
+        "app.py",
+        "workflow.py",
+        "storage.py"
+      ],
+      "simulation": "Each scenario creates a fresh temporary directory. StepRecordStore persists one JSON file per instance_id in that directory. Before each run object, if reopen is true the store is closed and a new StepRecordStore is created over the same root; otherwise the store is reloaded from disk by constructing a new WorkflowRunner. Runs process prepare, transform, generate in order. After saving a completion record, if interrupt_after equals the current step, the run returns immediately. Record IDs are assigned from a persistent per-instance next_seq counter in completion order. After all runs, app returns the final persisted executions and completed_steps. The optional reopen flag lets the scenario exercise restart-equivalent storage behavior inside one process."
+    },
+    "review_feedback": {
+      "reason": "The specification is detailed and mostly verifiable, but three mandatory output_paths fields are only explicitly defined in output_schema property descriptions. Since output_rules must be derived from behaviors/input_domain/simulation/constraints, /instance_id echo, the literal record_id format, and completed_steps uniqueness/order currently cannot be verified solely from the allowed rule sources.",
+      "issues": [
+        {
+          "path": "/behaviors/echo_instance_id",
+          "reason": "The output field /instance_id is described only as 'Echoed instance id.' in output_schema. There is no explicit behavior/input_domain/simulation/constraints rule stating that the returned instance_id must equal the input instance_id. Add that rule."
+        },
+        {
+          "path": "/behaviors/deterministic_record_id",
+          "reason": "Simulation states 'Record IDs are assigned from a persistent per-instance next_seq counter in completion order.' but does not define the literal required format for /executions/*/record_id: step-NNNN where NNNN is the per-instance completion sequence. The format currently appears only in output_schema property description. Add an explicit rule."
+        },
+        {
+          "path": "/behaviors/completed_steps_order",
+          "reason": "The allowed sections mention persisted completed_steps and skipping completed steps, but never explicitly state that the returned /completed_steps/* must contain unique steps in workflow order (prepare, transform, generate). Uniqueness and order currently appear only in output_schema property description. Add an explicit rule."
+        }
+      ]
+    },
+    "rejected_changes": [
+      {
+        "path": "/behaviors/echo_instance_id",
+        "before": null,
+        "after": "The returned output field `instance_id` must exactly equal the input `instance_id` string provided in the scenario input.",
+        "reason": "Review feedback identified this output field rule as missing from the allowed behavior sources; adding it makes the echo requirement explicit and verifiable without changing the preserved code or fault design."
+      },
+      {
+        "path": "/behaviors/deterministic_record_id",
+        "before": null,
+        "after": "Each completion record's `record_id` must use the literal format `step-NNNN`, where `step` is the workflow step name (`prepare`, `transform`, or `generate`) and `NNNN` is the per-instance completion sequence counter, zero-padded to four digits and assigned in completion order.",
+        "reason": "Review feedback requires the literal record_id format to be defined outside the output schema; this rule is already implemented by the frozen code's persistent next_seq counter, so no conflict arises."
+      },
+      {
+        "path": "/behaviors/completed_steps_order",
+        "before": null,
+        "after": "The returned `completed_steps` array must contain each unique completed step exactly once, in workflow order: `prepare`, `transform`, `generate`, preserving first-completion order and excluding duplicates.",
+        "reason": "Review feedback requires explicit uniqueness and ordering for this output field; the frozen code maintains unique completed_steps in workflow order, so this rule clarifies rather than conflicts with the fault design."
+      }
+    ]
+  },
+  {
+    "sample": 4,
+    "job_id": "fad52b73d85744f3bf6cb5a38e91e47a",
+    "asset": "call-9e6fa182893e48c4b49c865014ec6e24",
+    "input_sha256": "34e4da8532bb80d45639c249acecbc6ce56aa5f0618d1d5ee12580d54dc159ca",
+    "contract": {
+      "title": "Idempotent Local Ticket Retry Simulation",
+      "scenario": "scenario(data) receives a list of logical ticket operations and executes them against a fresh local in-memory ticket tool. Each operation has an operation_id, a complete three-field ticket, and a deterministic failure_sequence. An automated agent retries each operation at most three times. The tool must use operation_id as an idempotency key: if an earlier attempt already created a ticket but its response was lost, later attempts must return the same ticket and not create a duplicate. Different operation_ids represent distinct logical operations and must never be merged even if ticket content is identical. The return value is a JSON-compatible object with per-operation status, attempt counts, records, and exact diagnostics; global tallies are returned for observation.",
+      "symptom": "When a single operation has failure_sequence ['after_write'], the output contains one logical operation with attempt_count 2 but record_ids has two different ticket IDs such as ['T000001','T000002'] and total_records is 2. The second diagnostic says CREATED ticket T000002 instead of RECOVERED ticket T000001. This means one response-lost retry created a duplicate ticket.",
+      "capabilities": [
+        "Deterministic local ticket tool and retry agent",
+        "Fault injection before write and after write",
+        "Idempotency by operation_id",
+        "JSON-visible ticket records and per-attempt diagnostics"
+      ],
+      "minutes": 20,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "operations": {
+            "type": "array",
+            "description": "Ordered logical ticket operations to process in one scenario.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "operation_id": {
+                  "type": "string",
+                  "description": "Stable logical operation id used for idempotency."
+                },
+                "ticket": {
+                  "type": "object",
+                  "description": "Complete ticket content copied into a created record.",
+                  "properties": {
+                    "summary": {
+                      "type": "string",
+                      "description": "Short ticket summary."
+                    },
+                    "description": {
+                      "type": "string",
+                      "description": "Detailed ticket description."
+                    },
+                    "priority": {
+                      "type": "string",
+                      "enum": [
+                        "low",
+                        "medium",
+                        "high"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "summary",
+                    "description",
+                    "priority"
+                  ],
+                  "additionalProperties": false
+                },
+                "failure_sequence": {
+                  "type": "array",
+                  "description": "Deterministic failure injection consumed in attempt order.",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "before_write",
+                      "after_write"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "operation_id",
+                "ticket",
+                "failure_sequence"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "operations"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "operation_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "created",
+                    "failed"
+                  ]
+                },
+                "attempt_count": {
+                  "type": "integer"
+                },
+                "record_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "records": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "operation_id": {
+                        "type": "string"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      },
+                      "summary": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "priority": {
+                        "type": "string",
+                        "enum": [
+                          "low",
+                          "medium",
+                          "high"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "operation_id",
+                      "ticket_id",
+                      "summary",
+                      "description",
+                      "priority"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "diagnostics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "operation_id",
+                "status",
+                "attempt_count",
+                "record_ids",
+                "records",
+                "diagnostics"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "total_records": {
+            "type": "integer"
+          },
+          "total_attempts": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "results",
+          "total_records",
+          "total_attempts"
+        ],
+        "additionalProperties": false
+      },
+      "behaviors": {
+        "idempotent_create": "Before applying any failure injection, the ticket tool must check whether operation_id already has a ticket. If so, it returns success with the existing ticket_id and emits RECOVERED, ignoring the attempted failure for that call.",
+        "finite_retry": "Each operation makes at most 3 low-level create attempts and stops on the first success.",
+        "failure_injection": "failure_sequence is consumed in attempt order. before_write returns a transient failure without writing. after_write writes a ticket and then returns a transient failure, simulating a lost response. Any attempts after the sequence end have no injected failure.",
+        "ticket_identity": "Ticket IDs are allocated as T000001, T000002, ... in actual write order for the scenario; they are never reused.",
+        "observability": "Results include records in creation order, record_ids, attempt_count, and one diagnostics line per actual low-level attempt. Exact diagnostics strings are as follows. For a successful non-recovered create: 'attempt {n}: CREATED ticket {ticket_id}'. For a recovered idempotent hit on an existing operation_id: 'attempt {n}: RECOVERED ticket {ticket_id} for operation {operation_id}'. For a transient before_write failure: 'attempt {n}: TRANSIENT_BEFORE_WRITE - no ticket created'. For a transient after_write failure: 'attempt {n}: TRANSIENT_AFTER_WRITE - ticket {ticket_id} created but response lost'. {n} is the 1-based attempt number. {ticket_id} is the allocated ticket ID exactly as stored in records. These strings are deterministic and must be used verbatim.",
+        "explicit_failure": "If all three attempts return transient failures and no success is observed, the operation status is failed; successful writes are still observable in records if they occurred. When status is failed, record_ids must contain every ticket_id present in that operation's records in creation order. In particular, if an after_write occurred on the third and final attempt, the operation is failed but its record is included in records and its ticket_id is included in record_ids; no retry after that failure occurs."
+      },
+      "constraints": [
+        "Return JSON-compatible data directly from scenario(data); do not print logs or raise exceptions for valid input.",
+        "Use only standard-library Python modules and deterministic in-memory state; no network, time, threads, processes, or randomness.",
+        "Treat all input as untrusted data; never evaluate input strings or read files/environment/config.",
+        "Do not merge operations that have different operation_id, even when ticket content is identical.",
+        "Do not reuse a ticket_id or skip IDs after a successful write.",
+        "After a transient before_write failure, retry the same logical operation; do not start a new operation.",
+        "The only deliberately faulty behavior to observe is duplicate tickets after an after_write response loss."
+      ],
+      "input_domain": "operations is an array of 1–10 logical operations processed in order. operation_id is a non-empty string up to 64 characters, unique within the scenario. ticket.summary and ticket.description are non-empty strings up to 200 characters; ticket.priority is one of low, medium, high. failure_sequence is an array of 0–3 strings from before_write/after_write. For the specified exercises use: [] normal; ['before_write'] transient then success; ['after_write'] lost response then retry; ['before_write','before_write','before_write'] exhausted failure. A sequence length may be less than 3; remaining attempts then have no failure. Valid scenarios should not place after_write as the third and final attempt because that has no retry left; if it does, the agent returns failed while the record is still visible.",
+      "exclusions": [
+        "Real network, timeouts, sockets, and external services are excluded.",
+        "Concurrency, process crashes, and shared persistence across scenarios are excluded.",
+        "Changing ticket content or operation_id between retries is excluded.",
+        "Using exceptions, non-JSON output, or hanging as the symptom is excluded.",
+        "Auxiliary log files are not part of the contract."
+      ],
+      "files": [
+        "app.py",
+        "agent.py",
+        "ticket_service.py"
+      ],
+      "simulation": "Each scenario(data) call runs in a fresh container with a new TicketService and RetryAgent; state is in-memory only. For each operation, the agent makes up to 3 attempts. On attempt i it passes failure_sequence[i-1] if present, otherwise None, to service.create. A correct tool first returns the existing ticket if operation_id has one; otherwise it applies the injected failure. before_write returns transient with no record. after_write writes a record then returns transient. None writes a record and returns success. Ticket IDs are sequential global T000001, ... Records and diagnostics are assembled into the output JSON; no real network is used. Aggregation is exact and deterministic: total_records is the sum over all results of len(result['records']); total_attempts is the sum over all results of result['attempt_count']. These sums are computed after processing all operations in the given order."
+    },
+    "review_feedback": {
+      "reason": "The specification provides strong simulation and diagnostics rules, but several output_paths fields cannot be uniquely determined solely from the allowed behavioral sources. In particular, results order and operation_id mapping, the created status rule, attempt_count definition, record_ids for successful operations, and the content of records elements are not explicitly stated in /behaviors, /input_domain, /simulation, or /constraints. Independent verification requires these mappings to be added before approval.",
+      "issues": [
+        {
+          "path": "/behaviors/result_mapping",
+          "reason": "Missing explicit rule that the results array has one entry per input operation, in the same order as the input operations, and that each result's operation_id equals the corresponding input operation_id. input_domain says operations are ordered and unique, but does not define the output results order or identity mapping."
+        },
+        {
+          "path": "/behaviors/status_outcome",
+          "reason": "Missing explicit rule for status = 'created'. explicit_failure only defines status = 'failed' when all three attempts return transient failures and no success is observed. It does not state that any observed success, including a recovered idempotent hit, must produce status 'created'."
+        },
+        {
+          "path": "/behaviors/attempt_count",
+          "reason": "finite_retry says each operation makes at most 3 low-level attempts and stops on first success, but it does not explicitly define the output field attempt_count as the actual number of low-level attempts made. simulation says the agent makes up to 3 attempts, but again does not tie that count to the attempt_count field."
+        },
+        {
+          "path": "/behaviors/record_ids",
+          "reason": "explicit_failure defines record_ids only when status is 'failed'. There is no general rule that record_ids must contain every ticket_id present in that operation's records in creation order when status is 'created'. Without this, /results/*/record_ids/* is underdetermined for successful operations."
+        },
+        {
+          "path": "/behaviors/records_content",
+          "reason": "Missing behavioral rule for the content of each record in the records array. The allowed behavioral sources do not state that records elements contain the input operation_id, the allocated ticket_id, and the summary/description/priority copied from the input ticket. Only the input_schema description mentions ticket content copied into a created record, but schema descriptions are not a valid source for output verification rules."
+        }
+      ]
+    },
+    "rejected_changes": [
+      {
+        "path": "/behaviors/result_mapping",
+        "before": null,
+        "after": {
+          "description": "The results array has exactly one entry per input operation, in the same order as the operations array. Each entry's operation_id is the operation_id string from the corresponding input operation. No reordering, deduplication, or filtering is applied."
+        },
+        "reason": "Review feedback requires the output results order and identity mapping to be explicitly specified; before this field was absent from /behaviors."
+      },
+      {
+        "path": "/behaviors/status_outcome",
+        "before": null,
+        "after": {
+          "description": "status is 'created' when any low-level create attempt succeeds or an idempotent recovered hit succeeds before max_attempts is exhausted. status is 'failed' only when all attempts made return transient failures and no success is observed, as described in explicit_failure. Recovery is a success and therefore produces status 'created'."
+        },
+        "reason": "Review feedback requires the successful status assignment to be explicit for created and recovered cases; before this field was absent from /behaviors."
+      },
+      {
+        "path": "/behaviors/attempt_count",
+        "before": null,
+        "after": {
+          "description": "attempt_count is the actual number of low-level create attempts made for the operation, starting at 1. It increments for every call to service.create until a success or recovered hit occurs, at which point no further attempts are made; if all max_attempts are exhausted, attempt_count equals max_attempts. The value must not include skipped attempts after a stop."
+        },
+        "reason": "Review feedback requires the attempt_count output field to be tied to the finite retry rule; before this field was absent from /behaviors."
+      },
+      {
+        "path": "/behaviors/record_ids",
+        "before": null,
+        "after": {
+          "description": "record_ids contains every ticket_id present in that operation's records, in creation order. For status 'created', this is exactly the list of ticket_id values from the operation's records. For status 'failed', the same creation-order rule applies plus the explicit_failure requirement that all successful writes are visible in record_ids. In an idempotent retry after a lost response, only the original ticket_id appears."
+        },
+        "reason": "Review feedback requires record_ids to be defined for successful operations and generally as creation-ordered recorded ticket IDs; before this field was absent from /behaviors."
+      },
+      {
+        "path": "/behaviors/records_content",
+        "before": null,
+        "after": {
+          "description": "Each record in the records array is a JSON object with exactly the fields operation_id, ticket_id, summary, description, and priority. operation_id is the corresponding input operation_id; ticket_id is the allocated ticket ID; summary, description, and priority are copied verbatim from the input ticket for that operation. Records are ordered by actual write order, which is the global ticket_id allocation order."
+        },
+        "reason": "Review feedback requires the records element content and source mapping to be specified by behavior, not only by input schema description; before this field was absent from /behaviors."
+      }
+    ]
+  }
+]

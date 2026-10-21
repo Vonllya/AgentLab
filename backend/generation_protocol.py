@@ -3,7 +3,7 @@ import copy
 import json
 from typing import Any, Literal
 from pydantic import Field, model_validator
-from .generation_schema import Strict, Case, Evaluation, Contract, validate_evaluation
+from .generation_schema import CASE_ID_MAX_LENGTH, Strict, Case, Evaluation, Contract, validate_evaluation
 
 VERSION = 'separated-evidence-v2'
 
@@ -49,7 +49,7 @@ class Assertion(Strict):
     equals: Any
 
 class Fingerprint(Strict):
-    case_id: str = Field(max_length=46)
+    case_id: str = Field(max_length=CASE_ID_MAX_LENGTH)
     design_quote: str = Field(min_length=4, max_length=1000)
     reason: str = Field(min_length=10, max_length=1000)
     assertions: list[Assertion] = Field(min_length=1, max_length=8)
@@ -79,6 +79,8 @@ def matches(actual, check):
 def validate_faults(job, raw):
     from . import generation as g
     from . import generation_fault_model as fm
+    from . import generation_fault_obligations as obligations
+    if obligations.enabled(job):return obligations.normalize(job,raw)
     value = (ImpactFaultChecks if fm.enabled(job) else FaultChecks).model_validate(raw).model_dump()
     if fm.enabled(job):fm.validate_impacts(job,value)
     if len(json.dumps(value).encode()) > 24000: raise ValueError('故障断言资产过大')
@@ -101,7 +103,7 @@ def validate_faults(job, raw):
     return value
 
 class FieldPatch(Strict):
-    case_id: str = Field(max_length=46)
+    case_id: str = Field(max_length=CASE_ID_MAX_LENGTH)
     field: Literal['expected', 'faulty_expected', 'group']
     before: Any
     after: Any

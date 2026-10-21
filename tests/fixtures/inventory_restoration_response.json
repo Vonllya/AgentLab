@@ -1,0 +1,117 @@
+{
+  "patch": {
+    "binding": {
+      "contract_hash": "c170abb587fa232f46a209eff63281dbf780036735c3b948545979209c374c05",
+      "source_hash": "f48c3e4f1c7a35b58b21f75b6318a1f4672647a9e8d7e8ebb4ac1e654b64aa7a",
+      "candidate_hash": "431c18d3f4f19359d8e4203c5ceff04aba432307214f95f72b323a8db92e0b19"
+    },
+    "decision": "patch",
+    "reason": "恢复此前已接受的三个需求 ID、原文和类别，并将 instance_isolation 补上同一输入多个不同工作流实体的 distinct 条件，同时保留 expected 状态隔离证据。公开规范足以表达隔离关系，无接口缺口。",
+    "replacements": [
+      {
+        "id": "ordered_workflow_steps",
+        "source": "request.requirement",
+        "quote": "流程依次准备数据、转换数据、生成结果，其中某些步骤已经完成并保存状态，恢复后却重复执行，产生重复的处理记录。",
+        "objective": "The generated project must model a three-step batch workflow with fixed order and persisted completed-step state.",
+        "kind": "sequence",
+        "rules": [
+          {
+            "source": "expected",
+            "path": [
+              "states",
+              "*",
+              "completed_steps",
+              "*"
+            ],
+            "op": "count_eq",
+            "value": "prepare_data",
+            "minimum": 1
+          }
+        ]
+      },
+      {
+        "id": "resume_skip_no_side_effects",
+        "source": "request.requirement",
+        "quote": "正常行为应在恢复时跳过已完成步骤，按原顺序执行剩余步骤；完整流程再次恢复应没有新增副作用，不同工作流实例的状态必须隔离。",
+        "objective": "Resuming a workflow must skip completed steps, execute only remaining steps in order, add no side effects when already complete, and isolate instances.",
+        "kind": "behavior",
+        "rules": [
+          {
+            "source": "expected",
+            "path": [
+              "records",
+              "*",
+              "step"
+            ],
+            "op": "count_eq",
+            "value": "prepare_data",
+            "minimum": 1
+          }
+        ]
+      },
+      {
+        "id": "interrupt_and_reopen",
+        "source": "request.requirement",
+        "quote": "输入应能选择在各个步骤完成状态已持久化之后中断，并可在一次场景内多次恢复；用本地持久化的步骤执行记录验证是否重复，关闭重开存储后行为也应一致。",
+        "objective": "The scenario must allow interruption after any persisted step, multiple resume actions in one call, and verification through locally persisted execution records across storage reopen cycles.",
+        "kind": "sequence",
+        "rules": [
+          {
+            "source": "expected",
+            "path": [
+              "records",
+              "*",
+              "run"
+            ],
+            "op": "count_eq",
+            "value": 1,
+            "minimum": 1
+          }
+        ]
+      },
+      {
+        "id": "instance_isolation",
+        "source": "request.requirement",
+        "quote": "不同工作流实例的状态必须隔离",
+        "objective": "Different workflow_ids must have isolated persisted state and record lists; one workflow must not read or write another workflow's storage.",
+        "kind": "shared_state",
+        "rules": [
+          {
+            "source": "input",
+            "path": [
+              "workflows",
+              "*",
+              "id"
+            ],
+            "op": "distinct",
+            "minimum": 2
+          },
+          {
+            "source": "expected",
+            "path": [
+              "states",
+              "*",
+              "workflow_id"
+            ],
+            "op": "distinct",
+            "minimum": 2
+          }
+        ]
+      }
+    ],
+    "issues": [],
+    "interface_gap": false,
+    "restore_ids": [
+      {
+        "candidate_id": "resume_skip_remaining_order",
+        "accepted_id": "resume_skip_no_side_effects"
+      },
+      {
+        "candidate_id": "interrupt_multiple_resume_reopen",
+        "accepted_id": "interrupt_and_reopen"
+      }
+    ]
+  },
+  "origin_response": "data/inventory-repair-verification/20261017T033551Z/followup/run-data/generation/6b840c3d213641608be4daefc2c9a5ee/call-d83d8b31e3274a7e8f1931220292cf20/response.txt",
+  "mapping_added_by": "engineering regression fixture; not claimed as original model output"
+}

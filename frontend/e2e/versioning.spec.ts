@@ -1,3 +1,4 @@
+import {fillDiagnosis,expectDiagnosis} from './diagnosis';
 import {test,expect} from '@playwright/test';
 import {readFileSync} from 'node:fs';
 
@@ -28,7 +29,7 @@ test('进阶多文件 Docker 提交与快照恢复闭环',async({page,request},t
  await edit('index_store.py',reference);
  const pipeline=before.files['pipeline.py']+'\n# multi-file browser proof\n';
  await edit('pipeline.py',pipeline);
- await page.getByLabel('诊断说明').fill('更新轨迹中同一文档存在旧片段；按文档替换并验证空正文、低版本与重开持久化。');
+ await fillDiagnosis(page,'更新轨迹中同一文档存在旧片段；按文档替换并验证空正文、低版本与重开持久化。');
  await page.getByRole('button',{name:'打开文件 retrieval.py',exact:true}).click();
  await expect(page.getByText('● 有未保存修改（草稿已本地保留）')).toBeVisible();
  await page.reload();
@@ -56,6 +57,7 @@ test('进阶多文件 Docker 提交与快照恢复闭环',async({page,request},t
  const snapshot=await (await request.get(`/api/sessions/${id}/snapshots/${report.snapshot}`)).json();
  expect(Object.keys(snapshot.files)).toHaveLength(6);
  expect(snapshot.files['pipeline.py']).toBe(pipeline);
+ await page.locator('.report').getByText('执行证据、版本与代码快照',{exact:true}).click();
  await page.locator('.report').getByRole('button',{name:report.snapshot.slice(0,16)+' ↗'}).click();
  await expect(page.locator('.evidence > pre')).toContainText('===== index_store.py =====');
  await expect(page.locator('.evidence > pre')).toContainText('===== pipeline.py =====');
