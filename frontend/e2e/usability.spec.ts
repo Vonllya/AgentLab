@@ -31,5 +31,5 @@ test('示例不会无提示覆盖草稿，窄屏使用明确工作区切换',asy
  await page.getByRole('button',{name:'对话',exact:true}).click();
  await expect(page.getByLabel('给 Agent 的消息')).toBeVisible();
  await page.getByRole('button',{name:'代码',exact:true}).click();
- await expect(page.locator('.monaco-editor')).toBeVisible();
+ await expect(page.getByLabel('任务文档',{exact:true})).toBeVisible();
 });

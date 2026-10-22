@@ -48,10 +48,13 @@ test('生成审核发布及 Docker 训练报告闭环（明确 MOCK）',async({p
  await page.getByRole('button',{name:'提示与范围',exact:true}).click();
  await page.getByText('契约、全部实现、独立检查与教学材料',{exact:true}).click();
  await expect(page.locator('pre.review-assets').filter({hasText:'"faulty"'})).toContainText('faulty');
- await expect(page.getByRole('button',{name:'审核通过并发布'})).toBeDisabled();
+ await expect(page.getByRole('button',{name:'添加至题库'})).toBeEnabled();
+ await page.getByRole('button',{name:'添加至题库'}).click();
+ await expect(page.getByRole('alert')).toContainText('请填写至少 10 个字符');
  await page.getByLabel('审核依据').fill('自动化离线审核表单测试（不构成人工审核）：正数、负数、多元素、空集期望均正确，两种规避被拒绝，提示无完整代码。');
  await page.getByLabel('我已审核当前资产及验证证据，确认可以发布').check();
- await page.getByRole('button',{name:'审核通过并发布'}).click();
+ expect((await (await request.get('/api/tasks')).json()).some((t:any)=>t.id==='gen_'+id)).toBe(false);
+ await page.getByRole('button',{name:'添加至题库'}).click();
  await expect(page.getByRole('heading',{name:/已冻结发布/})).toBeVisible();
  const job=await (await request.get('/api/generation/jobs/'+id)).json();
  expect(job.role_policy).toBe('consolidated-v1');
@@ -107,7 +110,7 @@ test('失败生成不可发布',async({page,request})=>{
  await expect(page.getByText('独立评测 Agent · 修复补丁被拒绝 · 调用 #1',{exact:true})).toBeVisible();
  await expect(page.getByText('契约 Agent · 供应商响应格式不兼容 · 调用 #2',{exact:true})).toBeVisible();
  await expect(page.getByText('构建 Agent · 资产校验通过（非最终验收） · 调用 #1',{exact:true})).toBeVisible();
- await expect(page.getByRole('button',{name:'审核通过并发布'})).toHaveCount(0);
+ await expect(page.getByRole('button',{name:'添加至题库'})).toHaveCount(0);
  const denied=await request.post('/api/author/generation/'+created.id+'/publish',{data:{approved:true,note:'无执行证据不能发布，这个请求必须被拒绝',review_digest:'0'.repeat(64)}});
  expect(denied.status()).toBe(400);
 });
@@ -199,7 +202,7 @@ test('回退后成本展示与作者摘要（MOCK，实际Docker）',async({page
  await expect(summary).toContainText('未通过门禁');
  await expect(summary).toContainText(id);
  await expect(summary.getByText('参考修复代码与思路审核').locator('..')).not.toHaveAttribute('open','');
- await expect(page.getByRole('button',{name:'审核通过并发布'})).toBeDisabled();
+ await expect(page.getByRole('button',{name:'添加至题库'})).toBeDisabled();
  await page.getByRole('button',{name:'返回生成详情'}).click();
  await page.getByRole('button',{name:'重新生成（消耗 Token）',exact:true}).click();
  await expect(page.getByRole('button',{name:'确认新预算并重新生成'})).toBeDisabled();

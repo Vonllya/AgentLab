@@ -98,6 +98,10 @@ h1 { letter-spacing: -.035em; font-weight: 650; line-height: 1.3; }
 .file-tab { flex-shrink: 0; background: #162126; border-color: var(--border); border-bottom: 0; }
 .file-tab[aria-selected=true] { background: #23332f; color: #b5ebd4; }
 .file-tab .tab-select { padding-top: 12px; padding-bottom: 12px; }
+/* A quiet icon within the tab, independent of global button hover fills. */
+.file-tab button.tab-close { display: grid; place-items: center; flex: none; width: 28px; height: 28px; margin: 0 5px 0 2px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); line-height: 1; }
+.file-tab button.tab-close:hover:not(:disabled),.file-tab button.tab-close:focus-visible { background: rgb(255 255 255 / 8%); color: var(--text); }
+.file-tab button.tab-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .panelhead { background: #18252a; border-color: var(--border); color: #cad9d6; }
 .evidence nav { background: #162227; flex-wrap: wrap; gap: 4px; }
 .evidence nav button { font-size: 13px; }
@@ -153,4 +157,63 @@ pre { background: #101b20; border-radius: 6px; font-size: 13px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { scroll-behavior: auto !important; transition: none !important; }
+}
+
+/* Workspace materials and quiet destructive actions. */
+.managed-records { border-top: 1px solid var(--border); padding-top: 18px; }
+.managed-records > summary { display: flex; align-items: center; gap: 12px; padding: 10px 0; cursor: pointer; list-style: none; font-size: 18px; font-weight: 600; }
+.managed-records > summary::-webkit-details-marker { display: none; }
+.managed-records > summary::before { content: '›'; display: inline-block; color: var(--muted); transform: rotate(0); }
+.managed-records[open] > summary::before { transform: rotate(90deg); }
+.managed-records > summary small { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 400; }
+.generation-history-list { padding-top: 8px; }
+.delete-control .delete-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 6px 9px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: var(--muted); font-size: 12px; line-height: 1.4; white-space: nowrap; }
+.delete-action svg { width: 15px; height: 15px; flex: none; }
+.delete-control .delete-action:hover:not(:disabled),.delete-control .delete-action:focus-visible { color: var(--danger); background: #33252c; border-color: #67424b; }
+.review-page,.review-section,.compare-grid > section,.review-actions > * { min-width: 0; }
+.matrix-grid { grid-template-columns: repeat(auto-fill,minmax(min(100%,210px),1fr)); }
+.matrix-cell { min-width: 0; max-width: 100%; overflow: hidden; }
+.matrix-cell strong,.matrix-cell span,.review-section h3,.review-page code { white-space: normal; overflow-wrap: anywhere; }
+.review-section pre { max-width: 100%; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; }
+.review-actions { grid-template-columns: minmax(120px,.7fr) minmax(180px,1.2fr) minmax(160px,1fr); align-items: start; }
+.review-actions textarea { width: 100%; }
+.review-actions > p { grid-column: 1 / -1; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.task-document { max-height: min(65vh,760px); overflow: auto; padding: 24px; }
+.task-document header { margin-bottom: 20px; }
+.task-document header h2 { font-size: 21px; margin-top: 0; }
+.task-document header p,.document-note { color: var(--muted); font-size: 12px; }
+.task-document section + section { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 18px; }
+.task-document h3 { font-size: 16px; margin: 0 0 8px; }
+.task-document .markdown { white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-document label { display: block; margin: 14px 0 8px; font-size: 13px; }
+.task-document textarea { width: 100%; min-height: 150px; resize: vertical; line-height: 1.7; }
+@media (max-width: 800px) {
+ .review-actions { grid-template-columns: minmax(0,1fr); }
+ .task-document { padding: 18px; max-height: 68vh; }
+ .record-row { gap: 4px; padding-right: 6px; }
+ .delete-control .delete-action { padding: 7px; }
+}
+
+/* Keep document headings independent of the global app header/footer styles. */
+.task-document header { display: block; height: auto; padding: 0; background: transparent; border: 0; }
+.review-actions button:not(.primary) { color: var(--text); background: var(--surface-2); border-color: var(--border); font-weight: 400; }
+
+/* One clipped history surface: square internal joins, rounded outer boundary. */
+.record-row { gap: 0; padding: 0; overflow: hidden; align-items: stretch; }
+.record-row > .record-main { border-radius: 0; margin: 0; }
+.record-row > .record-main:hover:not(:disabled) { background: #23353b; }
+.record-row > .delete-control { align-self: stretch; padding: 0 10px; border-left: 1px solid var(--border); background: #141e23; }
+.brand { cursor: default; }
+.review-actions { grid-template-columns: minmax(150px,.65fr) minmax(0,1.5fr); }
+.review-confirmation,.review-submit-actions { grid-column: 1 / -1; }
+.review-confirmation label { display: flex; align-items: flex-start; gap: 8px; }
+.review-confirmation input { flex: none; margin-top: 5px; }
+.review-confirmation p { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+.review-confirmation .review-validation { color: var(--danger); }
+.review-submit-actions { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; }
+.review-submit-actions button { min-height: 40px; }
+@media (max-width: 800px) {
+ .review-actions { grid-template-columns: minmax(0,1fr); }
+ .record-row > .delete-control { padding: 0 6px; }
+ .review-submit-actions { gap: 8px; }
 }

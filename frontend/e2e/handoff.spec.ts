@@ -30,8 +30,8 @@ test('工单冲突停止、作者证据及刷新恢复（离线接口夹具）',
  await page.getByRole('button',{name:'故障与修复',exact:true}).click();
  await page.getByText('冲突 '+ 'c'.repeat(12)+' · constraint_conflict',{exact:true}).click();
  await expect(page.getByText('同一输入不能同时包含与缺少相同诊断标记。',{exact:true})).toBeVisible();
- await expect(page.getByRole('button',{name:'审核通过并发布'})).toBeDisabled();
- await page.reload();await expect(page.getByRole('button',{name:'审核通过并发布'})).toBeDisabled();
+ await expect(page.getByRole('button',{name:'添加至题库'})).toBeDisabled();
+ await page.reload();await expect(page.getByRole('button',{name:'添加至题库'})).toBeDisabled();
  expect(posts).toBe(0);
 });
 

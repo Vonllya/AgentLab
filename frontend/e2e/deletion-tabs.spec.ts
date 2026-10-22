@@ -15,6 +15,8 @@ test('生成记录删除支持取消、成功、重复请求与直接链接',asy
  const requirement='浏览器删除专用生成记录 '+Date.now();
  const job=await (await request.post('/api/generation/jobs',{data:{requirement}})).json();
  await page.goto('/generate');
+ await expect(page.locator('.managed-records')).not.toHaveAttribute('open');
+ await page.locator('.managed-records > summary').click();
  const row=page.locator('.record-row').filter({hasText:requirement});
  page.once('dialog',dialog=>dialog.dismiss());await row.getByRole('button',{name:/删除 /}).click();
  await expect(row).toBeVisible();
@@ -28,6 +30,7 @@ test('训练记录删除清理浏览器状态且不影响其他会话',async({pa
  const one=await (await request.post('/api/sessions',{data:{task_id:'rag'}})).json();
  const other=await (await request.post('/api/sessions',{data:{task_id:'rag'}})).json();
  await page.goto('/library');
+ await page.locator('.training-history > summary').click();
  await page.evaluate(id=>{localStorage.setItem('session',id);localStorage.setItem('draft:'+id,'{}');localStorage.setItem('workspace:tabs:'+id,'{}')},one.id);
  const row=page.locator('.training-record').filter({hasText:one.id.slice(0,12)});
  page.once('dialog',dialog=>{expect(dialog.message()).toContain('共享快照不会删除');return dialog.accept()});

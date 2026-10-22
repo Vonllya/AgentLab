@@ -1,45 +1,88 @@
-# 版本化任务包
+# 任务包与多文件权限
 
-旧三题保持 `tasks/{rag,retry,resume}/1.0.0` 原样。未指定多文件权限时默认读取/编辑 `solution.py`，参考与基线分别为 `private/reference.py`、`private/normal.py`。新任务不修改旧版本、历史报告或旧快照摘要。
+[返回首页](../README.md) · [生成资产格式](GENERATION_FORMAT.md) · [架构说明](../ARCHITECTURE.md)
 
-进阶任务位于 `tasks/rag_versioning/1.0.0/`：
+任务以 ID 和版本组织。训练会话固定引用创建时的任务版本；用户修改发生在独立工作副本中，不改写原始任务包。
 
-- `manifest.json`：题面、公开接口、版本、能力标签、设计估计时长、环境；明确 `readable`、`editable`、`runtime`、`private_assets`。
-- `initial/`：只读 `solution.py`，可编辑 `pipeline.py`、`ingestion.py`、`index_store.py`、`retrieval.py`、`context_builder.py`。
-- `public_cases.json`、`public_test.py`：初次导入、更新查询、无关文档保留三个公开行为；直接运行公开 pytest 也必须通过 Docker fixture。
-- `private/hidden_cases.json`：11 个行为检查，覆盖旧片段清除、片段缩减、旧关键词、文档隔离、重复导入、延迟低版本、空正文、重开持久化及不同数据组合。
-- `private/normal/`、`private/reference/`：各自完整六文件正常基线与参考实现；实现写法不同，不以代码相等判分。
-- `private/hints.json`、`private/rubric.json`：沿用三级授权提示和无精确能力总分的评价规则。
+## 两类任务
 
-权限字段是可信任务包配置，不能由 API、用户代码或模型修改。只允许扁平文件名；读取集合必须等于可编辑集合与固定运行资产集合之并集。私有资产不进入公开任务索引、文件接口、Agent 或容器挂载。公开测试入口由独立只读 API 提供，不属于可编辑代码集合。
+| 类型 | 位置 | 评测方式 |
+| --- | --- | --- |
+| 固定任务 | `tasks/<task_id>/<version>/` | 仓库维护的可信行为断言，通过 Docker 调用任务代码 |
+| 生成任务 | `data/published/gen_<job_id>/<version>/` | 冻结的 JSON 输入与期望值，由平台解释器比较 Docker 返回结果 |
 
-`scenario({"actions": [...]})` 支持：
+默认数据目录可通过 `AGENTLAB_DATA` 修改。生成中、验证失败或尚未审核发布的资产不进入可训练题库。
+
+## 基本结构
+
+```text
+任务版本/
+  manifest.json
+  initial/                 # 故障版代码
+  public_cases.json        # 公开输入与行为期望
+  public_test.py           # 公开测试或结构化测试说明
+  private/
+    hidden_cases.json
+    normal/                # 正常基线，多文件格式
+    reference/             # 参考修复，多文件格式
+    hints.json
+    …                      # 评分规则或作者资产
+```
+
+原三道单文件任务使用 `private/normal.py` 与 `private/reference.py`。生成任务额外包含作者审计与冻结清单，详见[生成资产格式](GENERATION_FORMAT.md)。
+
+## manifest 权限
+
+manifest 包含任务 ID、版本、标题、题面、能力标签、预计时长、环境与文件权限。预计时长是设计估计，不代表经过学习者样本校准。
+
+| 字段 | 用途 |
+| --- | --- |
+| `readable` | 文件 API、编辑器与训练 Agent 可读取的文件 |
+| `editable` | 用户可保存修改的业务文件 |
+| `runtime` | 随任务版本固定的只读运行依赖 |
+| `private_assets` | 固定任务可声明的服务端私有资产，不属于读取或挂载白名单 |
+
+规则要求 `readable = editable ∪ runtime`，且 `editable` 与 `runtime` 不重叠。文件清单只接受扁平 Python 文件名，必须包含 `solution.py`。原单文件任务未声明这些字段时，默认只读取和编辑 `solution.py`。
+
+以下是双模块任务的权限示例：
 
 ```json
-{"actions": [
-  {"op":"import", "document_id":"refund", "version":1, "body":"退款 旧规则 7天"},
-  {"op":"import", "document_id":"refund", "version":2, "body":"退款 新规则 30天"},
-  {"op":"reopen"},
-  {"op":"query", "query":"退款", "limit":1}
-]}
+{
+  "readable": ["solution.py", "app.py", "storage.py"],
+  "editable": ["app.py", "storage.py"],
+  "runtime": ["solution.py"]
+}
 ```
 
-正文按非空行切分，词项匹配计分。输出 `result` 包括 `queries`、`versions` 和 `chunks`；另有 `trace` 记录导入版本、前后数量、候选 ID/文档/版本/分数和最终上下文。轨迹可被用户代码修改，不是可信通过证明。`contract: versioned_index` 让服务端评测器仅比较结构化行为 `result`，忽略轨迹作为判分依据。公开失败显示期望与实际，隐藏失败只显示筛选后的类别、行为覆盖和状态。聊天工具对隐藏覆盖保持未知，不读取隐藏用例文件。
+权限由服务端统一执行，拒绝未列出文件、绝对路径、路径穿越和符号链接。隐藏测试、参考修复及平台配置不会因文件名可猜测而获得访问权限。公开测试通过只读接口提供，不属于可编辑文件集合。
 
-整数版本可跳跃。高版本完整替换同文档正文；重复相同版本/内容幂等，低版本忽略，空正文保留版本但无片段。其他文档不受影响，重开后保持一致。同版本不同内容、非法输入、并发、崩溃事务恢复与生产级分布式一致性不在输入域。固定 SQLite 表和公开函数接口是题面协议；接受所有满足协议的实现，不要求匹配参考代码。
+## 保存与执行
 
-任务运行仅 Python 标准库，依赖固定 Dockerfile 基础镜像。每个检查单独容器/临时 SQLite，不共享可写索引，不使用 embedding、模型或网络。故障仅为更新时追加片段而未清除同文档旧片段，其他模块按契约工作。
+多文件保存必须包含全部可编辑文件，避免遗漏未选中的模块。保存成功后，服务端更新工作区修订，再为运行或提交创建只读快照。
 
-测试命令：
+快照按稳定顺序记录文件路径与内容，同时绑定任务 ID 和版本。只读入口也包含在执行快照中，并与固定任务资产核对。旧单文件快照保留原格式和摘要算法。
 
-```bash
-docker build -t agentlab-runner:0.1 -f backend/Dockerfile .
-.venv/bin/python -m pytest tests/test_versioning_docker.py -v
-./scripts/acceptance.sh
-```
+所有业务模块都在容器内加载；宿主不导入任务代码。报告与执行关联同一快照，提交后的修改不会改变历史证据。
 
-Docker 不可用时直接测试会明确 skipped，完整验收会失败阻塞；不允许宿主运行用户代码。本机项目所有者可阅读私有资产，隔离仅针对正常应用流程，不是防本机所有者的秘密机制。
+## 进阶多文件任务
 
-## V0.2 生成任务
+“知识库更新后的旧版本污染”使用以下结构：
 
-生成任务位于 `data/published/gen_<id>/<version>`，manifest 标记 `source=generated` 和 `generation_mode`，包含固定契约及协议标识。训练仍使用同一 readable/editable/runtime 权限与多文件快照。评测资产为 JSON，而不是生成的宿主 pytest；详见 [生成资产格式](GENERATION_FORMAT.md)。冻结环境使用已验证镜像的本地 digest，旧会话按原版本读取。
+| 文件 | 职责 | 权限 |
+| --- | --- | --- |
+| `solution.py` | 统一场景入口 | 只读 |
+| `pipeline.py` | 导入与查询编排 | 可编辑 |
+| `ingestion.py` | 确定性切分与片段元数据 | 可编辑 |
+| `index_store.py` | SQLite 索引与文档版本 | 可编辑 |
+| `retrieval.py` | 检索与排序 | 可编辑 |
+| `context_builder.py` | 上下文与引用组装 | 可编辑 |
+
+每个场景在容器临时目录建立独立索引，支持导入、查询和关闭重开。结果中的结构化行为由可信评测器比较；导入与检索轨迹仅用于调查，不能作为用户自报的通过证明。
+
+## 维护与验证
+
+维护任务时，应核对故障版稳定命中预设症状、正常版和参考修复通过目标与回归，以及典型错误修复能被拒绝。语法、依赖、路径或超时错误不能当作成功复现。
+
+已有任务的行为或资产发生变化时，应使用新版本并验证兼容性，不覆盖历史版本。当前固定任务发现机制有明确目录约定，新增固定版本还需检查服务端注册逻辑；它不是任意仓库导入接口。
+
+相关执行命令与结果判读见[安装与验收](../README.md#检查安装)。本地所有者可检查私有源码；隐藏资产仅在正常应用流程中隔离。

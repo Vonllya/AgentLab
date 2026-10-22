@@ -10,7 +10,7 @@ async def lifespan(app):
     s.init()
     yield
 
-app=FastAPI(title='AgentLab Interview',lifespan=lifespan)
+app=FastAPI(title='AgentLab',lifespan=lifespan)
 
 @app.middleware('http')
 async def local_only(request:Request,call_next):

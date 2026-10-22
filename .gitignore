@@ -15,3 +15,19 @@ frontend/playwright-report/
 /.codex/
 /.agents/
 /docs/*.png
+
+# Local verification notes, historical replay tools and personal runtime exports
+/VERIFICATION*.md
+/PERMISSION_REVIEW*.md
+/PLAN.md
+/scripts/*_probe.py
+/scripts/approved_generation_*.mjs
+/scripts/generation_browser_probe.mjs
+/scripts/real_model_smoke.mjs
+/scripts/reliability_smoke.mjs
+/scripts/verify_roles_evidence.py
+/scripts/smoke.py
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.log
