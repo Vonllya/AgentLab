@@ -1,4 +1,4 @@
-# AgentLab · V0.5
+# AgentLab
 
 **面向 Agent 开发的工程实操训练平台。**
 
