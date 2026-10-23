@@ -163,3 +163,7 @@ frontend/node_modules/.bin/playwright install chromium
 - [任务包与多文件权限](docs/TASK_PACKAGES.md)
 - [生成资产与版本格式](docs/GENERATION_FORMAT.md)
 - [故障优先生成流程](docs/FAULT_FIRST.md)
+
+## 许可证
+
+本项目采用 [MIT 许可证](LICENSE)。
